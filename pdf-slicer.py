@@ -464,8 +464,18 @@ def harvest_assets(page, output_folder):
         fname = os.path.join(harvested_folder, f"button_{button_count:02d}.svg")
         with open(fname, "w", encoding="utf-8") as f:
             f.write(_button_to_svg(btn, page))
-        fr = btn["full_rect"]
-        assets.append({"filename": fname, "type": "button", "bbox": [fr.x0, fr.y0, fr.x1, fr.y1]})
+        fr        = btn["full_rect"]
+        dom_shape = max(btn["paths"], key=lambda d: d["rect"].width * d["rect"].height) if btn["paths"] else {}
+        fill      = dom_shape.get("fill")
+        stk       = dom_shape.get("color")
+        assets.append({
+            "filename":           fname,
+            "type":               "button",
+            "bbox":               [fr.x0, fr.y0, fr.x1, fr.y1],
+            "shape_fill":         (_rgb_to_hex(fill)  if fill is not None else None),
+            "shape_stroke":       (_rgb_to_hex(stk)   if stk  is not None else None),
+            "shape_stroke_width": round(dom_shape.get("width", 0) or 0, 2),
+        })
         print(f"  [Harvest] Button:  {os.path.basename(fname)}  [{int(fr.width)}\u00d7{int(fr.height)}pt]")
 
     # B2: LOGOS / ICONS — remaining paths, small enough to be non-structural
@@ -702,53 +712,156 @@ def generate_manifest(pdf_path, page, slices, harvested_assets, output_folder, t
             merged_lines.append(dict(span))
 
     # ---------------------------------------------------------------------- #
-    # 4.  Map merged lines to their containing slice (by vertical centre)     #
+    # 4.  Classify merged lines: headline / button_text / body                #
+    #                                                                          #
+    #   headline    — letter-tracked (ls ≠ None) AND not inside a button.     #
+    #                 Rendered as PNG so the custom font is preserved exactly. #
+    #   button_text — center of line falls inside a harvested button bbox.    #
+    #   body        — everything else (normal paragraph text).                #
+    # ---------------------------------------------------------------------- #
+    button_assets_raw = [a for a in (harvested_assets or []) if a["type"] == "button"]
+    button_bboxes     = [a["bbox"] for a in button_assets_raw]
+
+    def _center_in_bbox(line_bbox, rect):
+        cx = (line_bbox[0] + line_bbox[2]) / 2.0
+        cy = (line_bbox[1] + line_bbox[3]) / 2.0
+        return rect[0] <= cx <= rect[2] and rect[1] <= cy <= rect[3]
+
+    harvested_folder = os.path.join(output_folder, "Harvested")
+    headline_count   = 0
+    headline_assets  = []
+
+    for ln in merged_lines:
+        in_button = any(_center_in_bbox(ln["bbox"], bb) for bb in button_bboxes)
+        if in_button:
+            ln["_role"] = "button_text"
+        elif ln.get("letter_spacing") is not None:
+            # Render as PNG — custom fonts cannot be losslessly represented as
+            # HTML text; the image preserves kerning, ligatures, and fill.
+            headline_count += 1
+            bb      = ln["bbox"]
+            padding = 6.0
+            clip    = fitz.Rect(bb[0]-padding, bb[1]-padding, bb[2]+padding, bb[3]+padding)
+            pix     = page.get_pixmap(
+                matrix=fitz.Matrix(2, 2), clip=clip,
+                colorspace=fitz.csRGB, alpha=True,
+            )
+            h_fname = os.path.join(harvested_folder, f"headline_{headline_count:02d}.png")
+            pix.save(h_fname)
+            ln["_role"] = "headline"
+            headline_assets.append({
+                "filename":       os.path.basename(h_fname),
+                "type":           "headline",
+                "text":           ln["text"],
+                "font":           ln["font"],
+                "size":           ln["size"],
+                "color":          ln["color"],
+                "letter_spacing": ln["letter_spacing"],
+                "bbox":           ln["bbox"],
+            })
+            print(f"  [Manifest] Headline: {os.path.basename(h_fname)}  [{ln['text'][:50]}]")
+        else:
+            ln["_role"] = "body"
+
+    # ---------------------------------------------------------------------- #
+    # 5.  Build enriched slices: alt_text + paragraph groups                  #
     # ---------------------------------------------------------------------- #
     enriched_slices = []
     for sl in slices:
         y0, y1 = sl["y0"], sl["y1"]
-        slice_lines = [
-            ln for ln in merged_lines
-            if y0 <= (ln["bbox"][1] + ln["bbox"][3]) / 2.0 < y1
-        ]
-        slice_lines.sort(key=lambda ln: (ln["bbox"][1], ln["bbox"][0]))
 
-        clean_lines = []
-        for ln in slice_lines:
-            entry = {
+        # All lines in this slice (reading order) — used for alt_text
+        all_lines = sorted(
+            [ln for ln in merged_lines if y0 <= (ln["bbox"][1] + ln["bbox"][3]) / 2.0 < y1],
+            key=lambda l: (l["bbox"][1], l["bbox"][0]),
+        )
+        alt_text = " ".join(ln["text"].strip() for ln in all_lines if ln["text"].strip()) or None
+
+        # Body-only lines grouped into paragraphs by consecutive style match
+        body_lines = [ln for ln in all_lines if ln.get("_role") == "body"]
+        paragraphs = []
+        for ln in body_lines:
+            if paragraphs:
+                last = paragraphs[-1]
+                if (
+                    last["font"]  == ln["font"]
+                    and last["size"]  == ln["size"]
+                    and last["color"] == ln["color"]
+                ):
+                    last["text"] += " " + ln["text"]
+                    last["bbox"] = [
+                        min(last["bbox"][0], ln["bbox"][0]),
+                        min(last["bbox"][1], ln["bbox"][1]),
+                        max(last["bbox"][2], ln["bbox"][2]),
+                        max(last["bbox"][3], ln["bbox"][3]),
+                    ]
+                    continue
+            paragraphs.append({
                 "text":  ln["text"],
                 "font":  ln["font"],
                 "size":  ln["size"],
                 "color": ln["color"],
-                "bbox":  ln["bbox"],
-            }
-            if ln["letter_spacing"] is not None:
-                entry["letter_spacing"] = ln["letter_spacing"]
-            clean_lines.append(entry)
+                "bbox":  list(ln["bbox"]),
+            })
 
         enriched_slices.append({
             "filename":       os.path.basename(sl["filename"]),
-            "y0":             sl["y0"],
-            "y1":             sl["y1"],
+            "y0":             y0,
+            "y1":             y1,
             "top_layer_kind": sl["top_layer_kind"],
-            "text_lines":     clean_lines,
+            "alt_text":       alt_text,
+            "paragraphs":     paragraphs,
         })
 
     # ---------------------------------------------------------------------- #
-    # 5.  Asset registry                                                       #
+    # 6.  Enrich button assets: text / font / text_color / background / border #
     # ---------------------------------------------------------------------- #
-    asset_registry = [
-        {
-            "filename": os.path.basename(a["filename"]),
-            "type":     a["type"],
-            "bbox":     [round(v, 2) for v in a["bbox"]],
-        }
-        for a in (harvested_assets or [])
-    ]
+    def _text_in_bbox(bbox):
+        return sorted(
+            [ln for ln in merged_lines if _center_in_bbox(ln["bbox"], bbox)],
+            key=lambda l: (l["bbox"][1], l["bbox"][0]),
+        )
+
+    enriched_buttons = []
+    for a in button_assets_raw:
+        btn_lines = _text_in_bbox(a["bbox"])
+        btn_text  = " ".join(ln["text"].strip() for ln in btn_lines if ln["text"].strip()) or None
+        ref       = btn_lines[0] if btn_lines else {}
+        enriched_buttons.append({
+            "filename":       os.path.basename(a["filename"]),
+            "type":           "button",
+            "text":           btn_text,
+            "font":           ref.get("font"),
+            "size":           ref.get("size"),
+            "text_color":     ref.get("color"),
+            "letter_spacing": ref.get("letter_spacing"),
+            "background":     a.get("shape_fill"),
+            "border": {
+                "color": a.get("shape_stroke"),
+                "width": a.get("shape_stroke_width", 0),
+            },
+            "bbox":           a["bbox"],
+        })
 
     # ---------------------------------------------------------------------- #
-    # 6.  Write manifest.json                                                  #
+    # 7.  Build asset registry and write manifest.json                        #
     # ---------------------------------------------------------------------- #
+    btn_lookup     = {b["filename"]: b for b in enriched_buttons}
+    asset_registry = []
+    for a in (harvested_assets or []):
+        bname = os.path.basename(a["filename"])
+        if a["type"] == "button":
+            asset_registry.append(btn_lookup.get(bname, {
+                "filename": bname, "type": "button", "bbox": a["bbox"],
+            }))
+        else:
+            asset_registry.append({
+                "filename": bname,
+                "type":     a["type"],
+                "bbox":     [round(v, 2) for v in a["bbox"]],
+            })
+    asset_registry.extend(headline_assets)
+
     manifest = {
         "meta": {
             "source":       os.path.basename(pdf_path),
@@ -763,11 +876,11 @@ def generate_manifest(pdf_path, page, slices, harvested_assets, output_folder, t
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(manifest, f, indent=2, ensure_ascii=False)
 
-    total_lines = sum(len(sl["text_lines"]) for sl in enriched_slices)
+    total_paras = sum(len(sl["paragraphs"]) for sl in enriched_slices)
     print(
         f"  [Manifest] Saved manifest.json "
-        f"({len(enriched_slices)} slice(s), {total_lines} text line(s), "
-        f"{len(asset_registry)} asset(s))"
+        f"({len(enriched_slices)} slice(s), {total_paras} paragraph(s), "
+        f"{headline_count} headline(s), {len(asset_registry)} asset(s))"
     )
 
 
