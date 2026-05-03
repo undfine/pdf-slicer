@@ -473,8 +473,8 @@ def harvest_assets(page, output_folder):
             "filename":           fname,
             "type":               "button",
             "bbox":               [fr.x0, fr.y0, fr.x1, fr.y1],
-            "shape_fill":         (_rgb_to_hex(fill)  if fill is not None else None),
-            "shape_stroke":       (_rgb_to_hex(stk)   if stk  is not None else None),
+            "shape_fill":         (_rgb_to_hex(fill) if fill is not None else None),
+            "shape_stroke":       (_rgb_to_hex(stk)  if stk  is not None else None),
             "shape_stroke_width": round(dom_shape.get("width", 0) or 0, 2),
         })
         print(f"  [Harvest] Button:  {os.path.basename(fname)}  [{int(fr.width)}\u00d7{int(fr.height)}pt]")
@@ -713,20 +713,18 @@ def generate_manifest(pdf_path, page, slices, harvested_assets, output_folder, t
             merged_lines.append(dict(span))
 
     # ---------------------------------------------------------------------- #
-    # 4.  Classify merged lines: headline / button_text / body                #
+    # 4.  Classify lines: button_text / headline / body                       #
     #                                                                          #
-    #   headline    — letter-tracked (ls ≠ None) AND not inside a button.     #
-    #                 Rendered as PNG so the custom font is preserved exactly. #
-    #   button_text — center of line falls inside a harvested button bbox.    #
-    #   body        — everything else (normal paragraph text).                #
+    #   button_text — centre point falls inside a harvested button bbox.      #
+    #   headline    — letter-tracked (ls ≠ None), NOT inside a button, and   #
+    #                 NOT overlaid on a page image (those stay in their slice) #
+    #   body        — everything else                                          #
     # ---------------------------------------------------------------------- #
     button_assets_raw = [a for a in (harvested_assets or []) if a["type"] == "button"]
     button_bboxes     = [a["bbox"] for a in button_assets_raw]
 
-    # All image rects on the page — used to detect text that is overlaid on an
-    # image (hero, photo section, etc.).  Such text must stay in its slice so
-    # the image + text render together; it must NOT be harvested as a separate
-    # headline PNG.
+    # Collect all image rects so we can detect text sitting on top of a photo.
+    # Such text belongs to the slice, not a standalone headline PNG.
     page_img_rects = [fitz.Rect(img["bbox"]) for img in page.get_image_info()]
 
     def _center_in_bbox(line_bbox, rect):
@@ -735,48 +733,79 @@ def generate_manifest(pdf_path, page, slices, harvested_assets, output_folder, t
         return rect[0] <= cx <= rect[2] and rect[1] <= cy <= rect[3]
 
     def _on_image(line_bbox):
-        """Return True when the line's centre point falls inside any page image."""
         cx = (line_bbox[0] + line_bbox[2]) / 2.0
         cy = (line_bbox[1] + line_bbox[3]) / 2.0
         pt = fitz.Point(cx, cy)
         return any(ir.contains(pt) for ir in page_img_rects)
 
+    for ln in merged_lines:
+        if any(_center_in_bbox(ln["bbox"], bb) for bb in button_bboxes):
+            ln["_role"] = "button_text"
+        elif ln.get("letter_spacing") is not None and not _on_image(ln["bbox"]):
+            ln["_role"] = "headline"
+        else:
+            ln["_role"] = "body"
+
+    # ---------------------------------------------------------------------- #
+    # 4b. Render headline groups as PNG                                        #
+    #                                                                          #
+    #   Consecutive headline lines that share the same font + color are        #
+    #   composited into ONE image.  This avoids exporting every tracked span   #
+    #   as a separate file.  alpha=False so the section background renders     #
+    #   correctly and the PNG is never blank/transparent.                      #
+    # ---------------------------------------------------------------------- #
     harvested_folder = os.path.join(output_folder, "Harvested")
     headline_count   = 0
     headline_assets  = []
 
-    for ln in merged_lines:
-        in_button = any(_center_in_bbox(ln["bbox"], bb) for bb in button_bboxes)
-        if in_button:
-            ln["_role"] = "button_text"
-        elif ln.get("letter_spacing") is not None and not _on_image(ln["bbox"]):
-            # Render as PNG — custom fonts cannot be losslessly represented as
-            # HTML text; the image preserves kerning, ligatures, and fill.
-            # Text overlaid on an image is excluded (stays with the slice).
-            headline_count += 1
-            bb      = ln["bbox"]
-            padding = 6.0
-            clip    = fitz.Rect(bb[0]-padding, bb[1]-padding, bb[2]+padding, bb[3]+padding)
-            pix     = page.get_pixmap(
-                matrix=fitz.Matrix(2, 2), clip=clip,
-                colorspace=fitz.csRGB, alpha=True,
-            )
-            h_fname = os.path.join(harvested_folder, f"headline_{headline_count:02d}.png")
-            pix.save(h_fname)
-            ln["_role"] = "headline"
-            headline_assets.append({
-                "filename":       os.path.basename(h_fname),
-                "type":           "headline",
-                "text":           ln["text"],
-                "font":           ln["font"],
-                "size":           ln["size"],
-                "color":          ln["color"],
-                "letter_spacing": ln["letter_spacing"],
-                "bbox":           ln["bbox"],
-            })
-            print(f"  [Manifest] Headline: {os.path.basename(h_fname)}  [{ln['text'][:50]}]")
-        else:
-            ln["_role"] = "body"
+    headline_lines = sorted(
+        [ln for ln in merged_lines if ln["_role"] == "headline"],
+        key=lambda l: (l["bbox"][1], l["bbox"][0]),
+    )
+
+    groups = []   # list of lists
+    for ln in headline_lines:
+        placed = False
+        if groups:
+            last = groups[-1][-1]
+            y_gap      = ln["bbox"][1] - last["bbox"][3]
+            same_style = last["font"] == ln["font"] and last["color"] == ln["color"]
+            if same_style and y_gap < last["size"] * 3:
+                groups[-1].append(ln)
+                placed = True
+        if not placed:
+            groups.append([ln])
+
+    for g in groups:
+        headline_count += 1
+        padding = 6.0
+        clip = fitz.Rect(
+            min(l["bbox"][0] for l in g) - padding,
+            min(l["bbox"][1] for l in g) - padding,
+            max(l["bbox"][2] for l in g) + padding,
+            max(l["bbox"][3] for l in g) + padding,
+        )
+        # alpha=False renders the actual section background; the PNG is never transparent
+        pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), clip=clip, colorspace=fitz.csRGB, alpha=False)
+        h_fname = os.path.join(harvested_folder, f"headline_{headline_count:02d}.png")
+        pix.save(h_fname)
+        ref        = g[0]
+        group_text = " ".join(l["text"].strip() for l in g)
+        group_bbox = [
+            min(l["bbox"][0] for l in g), min(l["bbox"][1] for l in g),
+            max(l["bbox"][2] for l in g), max(l["bbox"][3] for l in g),
+        ]
+        headline_assets.append({
+            "filename":       os.path.basename(h_fname),
+            "type":           "headline",
+            "text":           group_text,
+            "font":           ref["font"],
+            "size":           ref["size"],
+            "color":          ref["color"],
+            "letter_spacing": ref["letter_spacing"],
+            "bbox":           group_bbox,
+        })
+        print(f"  [Manifest] Headline: {os.path.basename(h_fname)}  [{group_text[:50]}]")
 
     # ---------------------------------------------------------------------- #
     # 5.  Build enriched slices: alt_text + paragraph groups                  #
@@ -785,14 +814,13 @@ def generate_manifest(pdf_path, page, slices, harvested_assets, output_folder, t
     for sl in slices:
         y0, y1 = sl["y0"], sl["y1"]
 
-        # All lines in this slice (reading order) — used for alt_text
         all_lines = sorted(
             [ln for ln in merged_lines if y0 <= (ln["bbox"][1] + ln["bbox"][3]) / 2.0 < y1],
             key=lambda l: (l["bbox"][1], l["bbox"][0]),
         )
         alt_text = " ".join(ln["text"].strip() for ln in all_lines if ln["text"].strip()) or None
 
-        # Body-only lines grouped into paragraphs by consecutive style match
+        # Consecutive body lines with same font/size/color merge into one paragraph
         body_lines = [ln for ln in all_lines if ln.get("_role") == "body"]
         paragraphs = []
         for ln in body_lines:
@@ -895,7 +923,7 @@ def generate_manifest(pdf_path, page, slices, harvested_assets, output_folder, t
     print(
         f"  [Manifest] Saved manifest.json "
         f"({len(enriched_slices)} slice(s), {total_paras} paragraph(s), "
-        f"{headline_count} headline(s), {len(asset_registry)} asset(s))"
+        f"{headline_count} headline group(s), {len(asset_registry)} asset(s))"
     )
 
 
