@@ -69,6 +69,12 @@ The script includes robust error handling:
 
 ## Changelog
 
+### v5.0
+- Added `get_combined_image_bounds()` to handle multiple images in a single slice
+- Refined shrink-wrap logic: only applies to JPG slices (high image coverage), not PNGs
+- Format-specific alpha channel handling: alpha=True for PNGs (preserves transparency), alpha=False for JPGs
+- Improved multi-image handling by combining bounding boxes
+
 ### v4.0
 - Added edge inset feature (EDGE_INSET = 2.0pt) to remove borders from extracted images
 - Enhanced shrink-wrap logic: now applies inset to all four sides of cropped images

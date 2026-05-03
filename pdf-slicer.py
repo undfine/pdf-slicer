@@ -37,6 +37,28 @@ def get_slice_info(page, clip):
     ratio = image_coverage / (slice_area or 1)
     return ratio, dominant_img_rect
 
+def get_combined_image_bounds(page, clip):
+    """
+    Finds the total bounding box encompassing all images in the slice.
+    """
+    img_info = page.get_image_info(hashes=False, xrefs=True)
+    slice_area = clip.width * clip.height
+    image_coverage = 0
+    combined_rect = None
+    
+    for img in img_info:
+        img_rect = fitz.Rect(img["bbox"])
+        intersect = clip & img_rect
+        if not intersect.is_empty:
+            image_coverage += intersect.width * intersect.height
+            if combined_rect is None:
+                combined_rect = intersect
+            else:
+                combined_rect |= intersect # This expands the box to include both
+            
+    ratio = image_coverage / (slice_area or 1)
+    return ratio, combined_rect
+
 def run_slicer(pdf_path, target_width):
     abs_pdf_path = os.path.abspath(pdf_path)
     parent_dir = os.path.dirname(abs_pdf_path)
@@ -91,27 +113,33 @@ def run_slicer(pdf_path, target_width):
         y0, y1 = final_cuts[i], final_cuts[i+1]
         
         # Start with full width
-        clip = fitz.Rect(0, y0, width, y1)
+        full_width_clip = fitz.Rect(0, y0, width, y1)
+        coverage, combined_rect = get_combined_image_bounds(page, full_width_clip)
         
-        coverage, dom_rect = get_slice_info(page, clip)
-        
-        # --- SHRINK-WRAP LOGIC ---
-        # If an image takes up > 50% of the slice width, crop to its X bounds
-        if dom_rect and dom_rect.width > (width * 0.5):
-            # NEW: Apply the negative margin (inset) to all four sides
-            # This shaves off 2pt from top, bottom, left, and right.
-            inset_x0 = dom_rect.x0 + EDGE_INSET
-            inset_y0 = y0 + EDGE_INSET
-            inset_x1 = dom_rect.x1 - EDGE_INSET
-            inset_y1 = y1 - EDGE_INSET
-            
-            # Re-create the clip with the tighter bounds
-            clip = fitz.Rect(inset_x0, inset_y0, inset_x1, inset_y1)
-
+        # Determine format first
         ext = ".jpg" if coverage > 0.7 else ".png"
         
-        # IMPORTANT: Use alpha=False for cleaner edges (flatten to white)
-        pix = page.get_pixmap(matrix=matrix, clip=clip, colorspace=fitz.csRGB, alpha=False)
+        # INITIALIZE RENDERING CLIP
+        render_clip = full_width_clip
+
+        # --- REFINED SHRINK-WRAP LOGIC ---
+        # 1. Only shrink-wrap if it's a JPG (High image coverage)
+        # 2. Only if the images combined take up > 50% of the slice width
+        if ext == ".jpg" and combined_rect and combined_rect.width > (width * 0.5):
+            # Apply Inset to the combined box of all images in this row
+            render_clip = fitz.Rect(
+                combined_rect.x0 + EDGE_INSET, 
+                y0 + EDGE_INSET, 
+                combined_rect.x1 - EDGE_INSET, 
+                y1 - EDGE_INSET
+            )
+
+        # RENDER
+        # Use alpha=False only for JPGs to keep borders clean
+        # Keep alpha=True for PNGs to preserve text/logo transparency
+        use_alpha = True if ext == ".png" else False
+        
+        pix = page.get_pixmap(matrix=matrix, clip=render_clip, colorspace=fitz.csRGB, alpha=use_alpha)
         
         filename = os.path.join(output_folder, f"{prefix}_slice_{i+1:02d}{ext}")
         if ext == ".jpg":
