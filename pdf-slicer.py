@@ -464,10 +464,11 @@ def harvest_assets(page, output_folder):
         fname = os.path.join(harvested_folder, f"button_{button_count:02d}.svg")
         with open(fname, "w", encoding="utf-8") as f:
             f.write(_button_to_svg(btn, page))
-        fr        = btn["full_rect"]
-        dom_shape = max(btn["paths"], key=lambda d: d["rect"].width * d["rect"].height) if btn["paths"] else {}
-        fill      = dom_shape.get("fill")
-        stk       = dom_shape.get("color")
+        fr           = btn["full_rect"]
+        filled_paths = [d for d in btn["paths"] if d.get("fill") is not None]
+        dom_shape    = max(filled_paths, key=lambda d: d["rect"].width * d["rect"].height) if filled_paths else {}
+        fill         = dom_shape.get("fill")
+        stk          = dom_shape.get("color")
         assets.append({
             "filename":           fname,
             "type":               "button",
@@ -722,10 +723,23 @@ def generate_manifest(pdf_path, page, slices, harvested_assets, output_folder, t
     button_assets_raw = [a for a in (harvested_assets or []) if a["type"] == "button"]
     button_bboxes     = [a["bbox"] for a in button_assets_raw]
 
+    # All image rects on the page — used to detect text that is overlaid on an
+    # image (hero, photo section, etc.).  Such text must stay in its slice so
+    # the image + text render together; it must NOT be harvested as a separate
+    # headline PNG.
+    page_img_rects = [fitz.Rect(img["bbox"]) for img in page.get_image_info()]
+
     def _center_in_bbox(line_bbox, rect):
         cx = (line_bbox[0] + line_bbox[2]) / 2.0
         cy = (line_bbox[1] + line_bbox[3]) / 2.0
         return rect[0] <= cx <= rect[2] and rect[1] <= cy <= rect[3]
+
+    def _on_image(line_bbox):
+        """Return True when the line's centre point falls inside any page image."""
+        cx = (line_bbox[0] + line_bbox[2]) / 2.0
+        cy = (line_bbox[1] + line_bbox[3]) / 2.0
+        pt = fitz.Point(cx, cy)
+        return any(ir.contains(pt) for ir in page_img_rects)
 
     harvested_folder = os.path.join(output_folder, "Harvested")
     headline_count   = 0
@@ -735,9 +749,10 @@ def generate_manifest(pdf_path, page, slices, harvested_assets, output_folder, t
         in_button = any(_center_in_bbox(ln["bbox"], bb) for bb in button_bboxes)
         if in_button:
             ln["_role"] = "button_text"
-        elif ln.get("letter_spacing") is not None:
+        elif ln.get("letter_spacing") is not None and not _on_image(ln["bbox"]):
             # Render as PNG — custom fonts cannot be losslessly represented as
             # HTML text; the image preserves kerning, ligatures, and fill.
+            # Text overlaid on an image is excluded (stays with the slice).
             headline_count += 1
             bb      = ln["bbox"]
             padding = 6.0
