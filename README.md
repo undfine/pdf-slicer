@@ -69,6 +69,13 @@ The script includes robust error handling:
 
 ## Changelog
 
+### v2.0
+- Added image boundary detection alongside color block analysis
+- Improved cut refinement with "sliver detection" (reduced threshold from 100px to 40px)
+- New safety check to prevent cutting inside images
+- Enhanced output logging with slice height information
+- Changed filename format from `prefix-slice` to `prefix_slice` (underscore separator)
+
 ### v1.0 (Initial Release)
 - Basic PDF slicing functionality
 - Automatic detection of color blocks for section boundaries

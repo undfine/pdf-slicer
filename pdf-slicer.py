@@ -31,62 +31,80 @@ def get_optimal_extension(page, clip):
     return ".jpg" if (image_coverage / (slice_area or 1)) > 0.7 else ".png"
 
 def run_slicer(pdf_path):
-    # 1. Resolve the path relative to the PDF file location
     abs_pdf_path = os.path.abspath(pdf_path)
     parent_dir = os.path.dirname(abs_pdf_path)
     prefix = get_abbreviated_prefix(abs_pdf_path)
-    
-    # 2. Create the output folder sitting right next to the PDF
     output_folder = os.path.join(parent_dir, f"{prefix}_Assets")
+    
     if not os.path.exists(output_folder):
         os.makedirs(output_folder)
 
-    # 3. Process the PDF
     try:
         doc = fitz.open(abs_pdf_path)
     except Exception as e:
-        print(f"Error opening PDF: {e}")
-        return
+        print(f"Error: {e}"); return
 
-    page = doc[0]  # Assuming single-page email PDF
+    page = doc[0]
     width, height = page.rect.width, page.rect.height
 
-    # Logic to find background color-block transitions for cutting
+    # 1. GATHER ALL POTENTIAL CUT POINTS
+    raw_cuts = [0, height]
+
+    # A: Background Color Block boundaries
     drawings = page.get_drawings()
-    cut_points = [0, height]
-    
     for d in drawings:
         if d["fill"] and d["rect"].width > width * 0.8:
-            cut_points.append(d["rect"].y0)
-            cut_points.append(d["rect"].y1)
+            raw_cuts.append(round(d["rect"].y0))
+            raw_cuts.append(round(d["rect"].y1))
+
+    # B: Image boundaries (This forces the "Text | Image | Text" split)
+    images = page.get_image_info()
+    img_boxes = [fitz.Rect(img["bbox"]) for img in images]
+    for box in img_boxes:
+        raw_cuts.append(round(box.y0))
+        raw_cuts.append(round(box.y1))
+
+    # 2. REFINE THE CUTS
+    # Sort and remove duplicates
+    sorted_cuts = sorted(list(set(raw_cuts)))
     
-    # Sort and remove duplicates/tiny slices
-    cut_points = sorted(list(set(cut_points)))
     final_cuts = [0]
-    for p in cut_points:
-        if 0 < p < height and p - final_cuts[-1] > 100:
-            final_cuts.append(p)
+    for p in sorted_cuts:
+        if p <= 0 or p >= height: continue
+        
+        # Check for "Slivers": Only cut if the section is at least 40px tall.
+        # (Emails often have tiny 1-5px shifts; this ignores them)
+        if p - final_cuts[-1] > 40:
+            # SAFETY CHECK: If this cut point (from a background rect) 
+            # lands INSIDE another image, don't cut there.
+            is_inside_another_image = False
+            for box in img_boxes:
+                if box.y0 + 5 < p < box.y1 - 5:
+                    is_inside_another_image = True
+                    break
+            
+            if not is_inside_another_image:
+                final_cuts.append(p)
+
     if final_cuts[-1] < height:
         final_cuts.append(height)
 
     print(f"--- Slicing: {os.path.basename(abs_pdf_path)} ---")
-    print(f"--- Target Folder: {output_folder} ---")
 
     for i in range(len(final_cuts) - 1):
-        clip = fitz.Rect(0, final_cuts[i], width, final_cuts[i+1])
-        ext = get_optimal_extension(page, clip)
+        y0, y1 = final_cuts[i], final_cuts[i+1]
+        clip = fitz.Rect(0, y0, width, y1)
         
-        # Render at 2x resolution
+        ext = get_optimal_extension(page, clip)
         pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), clip=clip)
         
-        filename = os.path.join(output_folder, f"{prefix}-slice_{i+1:02d}{ext}")
+        filename = os.path.join(output_folder, f"{prefix}_slice_{i+1:02d}{ext}")
         
         if ext == ".jpg":
             pix.save(filename, "jpg", jpg_quality=95)
         else:
             pix.save(filename)
-            
-        print(f"Saved: {os.path.basename(filename)}")
+        print(f" - Saved {os.path.basename(filename)} (Height: {int(y1-y0)}px)")
 
 if __name__ == "__main__":
     # --- STRICT GUARD CLAUSE ---
