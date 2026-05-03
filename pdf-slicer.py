@@ -1,4 +1,5 @@
 import fitz  # PyMuPDF
+import hashlib
 import os
 import re
 import sys
@@ -129,6 +130,281 @@ def get_combined_image_bounds(page, clip):
     ratio = image_coverage / (slice_area or 1)
     return ratio, combined_rect
 
+# =========================================================================== #
+# HARVESTING HELPERS                                                            #
+# =========================================================================== #
+
+def _rgb_to_hex(color):
+    """Convert a (r, g, b) float tuple to an SVG hex color string."""
+    if color is None:
+        return "none"
+    r, g, b = [max(0.0, min(1.0, c)) for c in color[:3]]
+    return f"#{int(r*255):02x}{int(g*255):02x}{int(b*255):02x}"
+
+
+def _path_items_to_svg_d(items):
+    """Convert a PyMuPDF drawing's item list to an SVG path 'd' attribute."""
+    parts = []
+    prev_end = None
+    for item in items:
+        cmd = item[0]
+        if cmd == "re":
+            r = item[1]
+            parts.append(
+                f"M {r.x0:.2f} {r.y0:.2f} "
+                f"h {r.width:.2f} v {r.height:.2f} h {-r.width:.2f} Z"
+            )
+            prev_end = None
+        elif cmd == "l":
+            p1, p2 = item[1], item[2]
+            if prev_end is None or abs(p1.x - prev_end.x) > 0.5 or abs(p1.y - prev_end.y) > 0.5:
+                parts.append(f"M {p1.x:.2f} {p1.y:.2f}")
+            parts.append(f"L {p2.x:.2f} {p2.y:.2f}")
+            prev_end = p2
+        elif cmd == "c":
+            p1, p2, p3, p4 = item[1], item[2], item[3], item[4]
+            if prev_end is None or abs(p1.x - prev_end.x) > 0.5 or abs(p1.y - prev_end.y) > 0.5:
+                parts.append(f"M {p1.x:.2f} {p1.y:.2f}")
+            parts.append(f"C {p2.x:.2f} {p2.y:.2f} {p3.x:.2f} {p3.y:.2f} {p4.x:.2f} {p4.y:.2f}")
+            prev_end = p4
+        elif cmd == "qu":
+            quad = item[1]
+            pts  = [quad.ul, quad.ur, quad.lr, quad.ll]
+            parts.append(
+                f"M {pts[0].x:.2f} {pts[0].y:.2f} " +
+                " ".join(f"L {p.x:.2f} {p.y:.2f}" for p in pts[1:]) + " Z"
+            )
+            prev_end = None
+    return " ".join(parts)
+
+
+def _group_to_svg(group, group_rect, padding=4.0):
+    """Render a cluster of drawing dicts to a standalone, self-contained SVG string."""
+    vx = group_rect.x0 - padding
+    vy = group_rect.y0 - padding
+    vw = group_rect.width  + 2 * padding
+    vh = group_rect.height + 2 * padding
+    lines = [
+        '<?xml version="1.0" encoding="utf-8"?>',
+        f'<svg xmlns="http://www.w3.org/2000/svg" '
+        f'viewBox="{vx:.2f} {vy:.2f} {vw:.2f} {vh:.2f}" '
+        f'width="{vw:.2f}" height="{vh:.2f}">',
+    ]
+    for d in group:
+        d_str = _path_items_to_svg_d(d.get("items", []))
+        if not d_str:
+            continue
+        fill   = _rgb_to_hex(d.get("fill"))
+        stroke = _rgb_to_hex(d.get("color"))
+        sw     = d.get("width", 0)
+        fo     = d.get("fill_opacity", 1.0)
+        so     = d.get("stroke_opacity", 1.0)
+        fr     = "evenodd" if d.get("even_odd") else "nonzero"
+        attrs  = [f'd="{d_str}"', f'fill="{fill}"', f'fill-rule="{fr}"']
+        if fill != "none" and fo < 1.0:
+            attrs.append(f'fill-opacity="{fo:.3f}"')
+        if stroke != "none" and sw > 0:
+            attrs += [f'stroke="{stroke}"', f'stroke-width="{sw:.2f}"']
+            if so < 1.0:
+                attrs.append(f'stroke-opacity="{so:.3f}"')
+        else:
+            attrs.append('stroke="none"')
+        lines.append(f'  <path {" ".join(attrs)}/>')
+    lines.append("</svg>")
+    return "\n".join(lines)
+
+
+def _cluster_drawings(drawings, proximity=15.0):
+    """Group path drawings into spatial clusters via a single-pass sweep."""
+    if not drawings:
+        return []
+    sorted_d = sorted(drawings, key=lambda d: (d["rect"].y0, d["rect"].x0))
+    groups, current = [], [sorted_d[0]]
+    current_union   = fitz.Rect(sorted_d[0]["rect"])
+    for d in sorted_d[1:]:
+        r        = d["rect"]
+        expanded = fitz.Rect(
+            current_union.x0 - proximity, current_union.y0 - proximity,
+            current_union.x1 + proximity, current_union.y1 + proximity,
+        )
+        if not (r & expanded).is_empty:
+            current.append(d)
+            current_union |= r
+        else:
+            groups.append(current)
+            current, current_union = [d], fitz.Rect(r)
+    groups.append(current)
+    return groups
+
+
+def _hash_drawing_group(group, group_rect):
+    """Position-normalized content hash for deduplicating vector clusters."""
+    w = group_rect.width  or 1
+    h = group_rect.height or 1
+    parts = []
+    for d in sorted(group, key=lambda x: (round(x["rect"].y0, 1), round(x["rect"].x0, 1))):
+        for item in d.get("items", []):
+            cmd = item[0]
+            if cmd == "re":
+                r = item[1]
+                parts.append(
+                    f"re:{(r.x0 - group_rect.x0)/w:.3f},"
+                    f"{(r.y0 - group_rect.y0)/h:.3f},"
+                    f"{r.width/w:.3f},{r.height/h:.3f}"
+                )
+            elif cmd in ("l", "c"):
+                coords = ",".join(
+                    f"{(getattr(pt, 'x', 0) - group_rect.x0)/w:.3f},"
+                    f"{(getattr(pt, 'y', 0) - group_rect.y0)/h:.3f}"
+                    for pt in item[1:]
+                )
+                parts.append(f"{cmd}:{coords}")
+        if d.get("fill"):  parts.append(f"f:{d['fill']}")
+        if d.get("color"): parts.append(f"s:{d['color']}")
+    return hashlib.md5("|".join(parts).encode()).hexdigest()
+
+
+# =========================================================================== #
+# ASSET HARVESTING                                                              #
+# =========================================================================== #
+
+def harvest_assets(page, output_folder):
+    """
+    Phase 0 — Asset Harvesting.
+
+    Extracts logos, icons, and transparent images as standalone files before
+    slicing begins. Two passes are made:
+
+      A. Raster — images that are transparent (have a soft mask / smask) or are
+         small relative to the page (<15% area, i.e. likely a logo or icon).
+         Transparent images are page-rendered so the smask is composited
+         correctly into a proper alpha channel. Small opaque images are
+         pulled directly from their PDF xref for maximum fidelity.
+
+      B. Vector — spatially-clustered drawing paths that are neither full-width
+         background bands nor hairlines. Each cluster is written as a standalone
+         SVG, preserving fill colour, stroke, opacity, and fill-rule.
+
+    Duplicates are suppressed via:
+      - Raster: the per-image content digest from get_image_info(hashes=True).
+      - Vector: a position-normalised MD5 of path coordinates + colours.
+
+    Args:
+        page:          A PyMuPDF Page object (page.parent gives the Document).
+        output_folder: The root _Assets folder; a /Harvested sub-folder is
+                       created automatically.
+    """
+    doc              = page.parent
+    harvested_folder = os.path.join(output_folder, "Harvested")
+    os.makedirs(harvested_folder, exist_ok=True)
+
+    page_width  = page.rect.width
+    page_height = page.rect.height
+    page_area   = page_width * page_height
+
+    seen_hashes  = set()
+    raster_count = 0
+    vector_count = 0
+
+    print("  [Harvest] Scanning page for logos and icons...")
+
+    # ----------------------------------------------------------------------- #
+    # PHASE A: Raster images                                                   #
+    # ----------------------------------------------------------------------- #
+    for img in page.get_image_info(hashes=True, xrefs=True):
+        xref = img.get("xref", 0)
+        if not xref:
+            continue
+
+        # Deduplicate by content digest
+        digest = img.get("digest", b"")
+        if digest in seen_hashes:
+            continue
+        seen_hashes.add(digest)
+
+        smask      = img.get("smask", 0)
+        bbox       = fitz.Rect(img["bbox"])
+        area_ratio = (bbox.width * bbox.height) / page_area
+        has_alpha  = smask > 0
+
+        # Harvest only: transparent images OR small images (logo / icon sized)
+        if not (has_alpha or area_ratio < 0.15):
+            continue
+
+        raster_count += 1
+        tag = "alpha" if has_alpha else f"{area_ratio:.0%} of page"
+
+        if has_alpha:
+            # Render the clip so the smask is composited into a real alpha channel
+            pix   = page.get_pixmap(
+                matrix=fitz.Matrix(2, 2), clip=bbox,
+                colorspace=fitz.csRGB, alpha=True
+            )
+            fname = os.path.join(harvested_folder, f"logo_{raster_count:02d}.png")
+            pix.save(fname)
+        else:
+            # Extract raw bytes from xref — lossless, original resolution
+            try:
+                raw   = doc.extract_image(xref)
+                ext   = raw.get("ext", "png")
+                fname = os.path.join(harvested_folder, f"logo_{raster_count:02d}.{ext}")
+                with open(fname, "wb") as f:
+                    f.write(raw["image"])
+            except Exception:
+                pix   = page.get_pixmap(
+                    matrix=fitz.Matrix(2, 2), clip=bbox,
+                    colorspace=fitz.csRGB, alpha=False
+                )
+                fname = os.path.join(harvested_folder, f"logo_{raster_count:02d}.png")
+                pix.save(fname)
+
+        print(f"  [Harvest] Raster: {os.path.basename(fname)}  [{tag}]")
+
+    # ----------------------------------------------------------------------- #
+    # PHASE B: Vector path clusters                                            #
+    # ----------------------------------------------------------------------- #
+    drawings = page.get_drawings()
+
+    # Exclude full-width background bands and hairlines; keep coloured shapes
+    candidates = [
+        d for d in drawings
+        if d["rect"].width  < page_width * 0.8
+        and d["rect"].width  > 2
+        and d["rect"].height > 2
+        and (d.get("fill") is not None or d.get("color") is not None)
+    ]
+
+    for group in _cluster_drawings(candidates, proximity=15.0):
+        group_rect = group[0]["rect"]
+        for d in group[1:]:
+            group_rect |= d["rect"]
+
+        # Skip clusters that are too large to plausibly be a logo
+        if (group_rect.width * group_rect.height) / page_area > 0.25:
+            continue
+
+        group_hash = _hash_drawing_group(group, group_rect)
+        if group_hash in seen_hashes:
+            continue
+        seen_hashes.add(group_hash)
+
+        vector_count += 1
+        fname = os.path.join(harvested_folder, f"vector_{vector_count:02d}.svg")
+        with open(fname, "w", encoding="utf-8") as f:
+            f.write(_group_to_svg(group, group_rect))
+        print(
+            f"  [Harvest] Vector: {os.path.basename(fname)}  "
+            f"[{int(group_rect.width)}\u00d7{int(group_rect.height)}pt, {len(group)} path(s)]"
+        )
+
+    total = raster_count + vector_count
+    print(f"  [Harvest] Done \u2014 {raster_count} raster + {vector_count} vector = {total} asset(s)")
+
+
+# =========================================================================== #
+# SLICER                                                                        #
+# =========================================================================== #
+
 def run_slicer(pdf_path, target_width):
     abs_pdf_path = os.path.abspath(pdf_path)
     parent_dir = os.path.dirname(abs_pdf_path)
@@ -150,6 +426,9 @@ def run_slicer(pdf_path, target_width):
     
     zoom = target_width / width
     matrix = fitz.Matrix(zoom, zoom)
+
+    # 0. ASSET HARVESTING
+    harvest_assets(page, output_folder)
 
     # 1. GATHER ALL POTENTIAL CUT POINTS (Horizontal Y-coordinates)
     drawings = page.get_drawings()

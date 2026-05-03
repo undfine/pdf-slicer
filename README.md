@@ -43,17 +43,18 @@ This will create a folder called `Marketing_Assets` in the same directory as the
 
 ## How It Works
 
-1. **Prefix Extraction**: Extracts the first part of the filename (before space or dash) to use as a prefix for output files
-2. **Color Block Analysis**: Scans the PDF for background color blocks that span more than 80% of the page width
-3. **Cut Point Determination**: Uses these color blocks to determine natural breaking points, filtering out cuts that would create tiny slices (< 100 units)
-4. **Content Analysis**: For each slice, analyzes whether it's primarily an image (>70% bitmap coverage) or text/graphics
-5. **High-Quality Rendering**: Renders each slice at 2x resolution with appropriate format (JPG at 95% quality for images, PNG for text)
+1. **Phase 0 — Asset Harvesting**: Before slicing, scans the page for logos, icons, and transparent images. Transparent raster images (with a soft mask) are page-rendered with alpha composited. Small opaque images (<15% page area) are extracted directly from their PDF xref. Isolated vector path clusters are exported as standalone SVGs. All assets are saved to a `/Harvested` subfolder and deduplicated via content hashing.
+2. **Prefix Extraction**: Extracts the first part of the filename (before space or dash) to use as a prefix for output files
+3. **Color Block Analysis**: Scans the PDF for background color blocks that span more than 80% of the page width
+4. **Cut Point Determination**: Uses these color blocks and image boundaries to determine natural breaking points
+5. **Content Analysis**: For each slice, analyzes whether it's primarily an image (>70% bitmap coverage) or text/graphics
+6. **High-Quality Rendering**: Renders each slice at the target width with appropriate format (JPG at 95% quality for images, PNG for text)
 
 ## Output Format
 
-- **Folder naming**: `{prefix}_Assets/`
-- **File naming**: `{prefix}-slice_{number}.{ext}`
-- **Image formats**: `.jpg` for photo-heavy content, `.png` for text/graphics
+- **Slice folder**: `{prefix}_Assets_{width}px/`
+- **Slice files**: `{prefix}_slice_{number}.{ext}` — `.jpg` for photo-heavy content, `.png` for text/graphics
+- **Harvested assets**: `{prefix}_Assets_{width}px/Harvested/` — `logo_NN.png`, `logo_NN.{ext}`, `vector_NN.svg`
 
 ## Limitations
 
@@ -68,6 +69,14 @@ The script includes robust error handling:
 - Gracefully handles PDF opening errors
 
 ## Changelog
+
+### v7.0
+- Added Phase 0: `harvest_assets(page, output_folder)` runs before slicing begins
+- Raster harvesting: extracts transparent images (smask → composited alpha PNG) and small images (<15% page area, extracted via xref for lossless quality)
+- Vector harvesting: clusters isolated drawing paths into logo groups and exports each as a standalone SVG (fill, stroke, opacity, fill-rule preserved)
+- Deduplication: raster assets use PyMuPDF content digest; vector clusters use a position-normalized MD5 hash — same logo appearing multiple times is saved only once
+- All harvested assets saved to `{prefix}_Assets_{width}px/Harvested/` subfolder
+- Added five private helpers: `_rgb_to_hex`, `_path_items_to_svg_d`, `_group_to_svg`, `_cluster_drawings`, `_hash_drawing_group`
 
 ### v6.0
 - Added `has_image_to_image_continuity_at_y()` to detect image composites and overlays
