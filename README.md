@@ -69,6 +69,13 @@ The script includes robust error handling:
 
 ## Changelog
 
+### v5.2
+- Added z-order detection using `page.get_bboxlog()` for advanced paint order analysis
+- New `get_top_layer_kind_at_y()` function to determine which element type is on top at specific Y coordinates
+- Enhanced cut refinement with z-order awareness: respects when drawings overlay images
+- Fallback logic for when paint-order data is unavailable
+- Better handling of overlapping elements based on actual rendering order
+
 ### v5.1
 - Refined cut prioritization: image boundaries now take precedence over drawing boundaries
 - Smart boundary replacement: image cuts can replace nearby non-image cuts within 40px

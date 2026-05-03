@@ -10,6 +10,57 @@ OUTPUT_SUBFOLDER_SUFFIX = "_Assets"
 # The number of original PDF points to shave off image edges to avoid borders
 EDGE_INSET = 2.0  
 
+def get_top_layer_kind_at_y(page, page_width, y, y_tolerance=1.0, min_width_ratio=0.8):
+    """
+    Returns which object kind is topmost around y for near-full-width objects:
+    'image', 'drawing', or None when unavailable.
+    Uses page.get_bboxlog() paint order when supported by the PyMuPDF build.
+    """
+    if not hasattr(page, "get_bboxlog"):
+        return None
+
+    try:
+        bboxlog = page.get_bboxlog()
+    except Exception:
+        return None
+
+    top_kind = None
+    top_seq = -1
+    min_width = page_width * min_width_ratio
+
+    for seq, entry in enumerate(bboxlog):
+        obj_type = None
+        bbox = None
+
+        if isinstance(entry, (tuple, list)) and len(entry) >= 2:
+            obj_type, bbox = entry[0], entry[1]
+        elif isinstance(entry, dict):
+            obj_type = entry.get("type")
+            bbox = entry.get("bbox")
+
+        if bbox is None:
+            continue
+
+        rect = fitz.Rect(bbox)
+        if rect.is_empty or rect.width < min_width:
+            continue
+
+        if not (rect.y0 - y_tolerance <= y <= rect.y1 + y_tolerance):
+            continue
+
+        t = str(obj_type).lower()
+        kind = None
+        if "image" in t:
+            kind = "image"
+        elif "path" in t:
+            kind = "drawing"
+
+        if kind and seq > top_seq:
+            top_seq = seq
+            top_kind = kind
+
+    return top_kind
+
 def get_abbreviated_prefix(filepath):
     base_name = os.path.splitext(os.path.basename(filepath))[0]
     parts = re.split(r'[\s-]', base_name)
@@ -84,8 +135,10 @@ def run_slicer(pdf_path, target_width):
     # 1. GATHER ALL POTENTIAL CUT POINTS (Horizontal Y-coordinates)
     drawings = page.get_drawings()
     raw_cuts = [0, height]
+    section_drawings = []  # wide filled rects that act as section separators
     for d in drawings:
         if d["fill"] and d["rect"].width > width * 0.8:
+            section_drawings.append(d["rect"])
             raw_cuts.append(round(d["rect"].y0))
             raw_cuts.append(round(d["rect"].y1))
 
@@ -95,7 +148,27 @@ def run_slicer(pdf_path, target_width):
         raw_cuts.append(round(box.y0))
         raw_cuts.append(round(box.y1))
 
-    # 2. REFINE THE CUTS - image boundaries take priority over drawing cuts
+    # Pre-compute fallback z-order proxy: map drawing y1 -> drawing rect for wide rects that
+    # START at or before an image's top edge. In PDF paint order, a drawing rendered
+    # on top of an image covers its top — matching y0 positions reveal this stacking.
+    # These sets are used only when paint-order data is unavailable.
+    drawing_y1_on_top = {}
+    hidden_img_top_cuts = set()
+    drawing_y_set = set()
+    img_top_y_set = set()
+    for drect in section_drawings:
+        drawing_y_set.add(round(drect.y0))
+        drawing_y_set.add(round(drect.y1))
+        for box in img_boxes:
+            img_top_y_set.add(round(box.y0))
+            if drect.y0 <= box.y0 + 5 and drect.y1 > box.y0 + 5:
+                # This drawing overlays the top of an image → it has higher z-index
+                drawing_y1_on_top[round(drect.y1)] = drect
+                # The image top is visually hidden under the drawing, so don't cut there.
+                hidden_img_top_cuts.add(round(box.y0))
+
+    # 2. REFINE THE CUTS - image boundaries take priority over drawing cuts,
+    #    EXCEPT when a drawing is painted on top of an image (higher z-index).
     img_y_set = set()
     for box in img_boxes:
         img_y_set.add(round(box.y0))
@@ -105,19 +178,38 @@ def run_slicer(pdf_path, target_width):
     final_cuts = [0]
     for p in sorted_cuts:
         if 0 < p < height:
-            is_inside_image = any(box.y0 + 5 < p < box.y1 - 5 for box in img_boxes)
+            top_kind = get_top_layer_kind_at_y(page, width, p)
+
+            is_inside_image = False
+            for box in img_boxes:
+                if box.y0 + 5 < p < box.y1 - 5:
+                    # p is geometrically inside this image.
+                    # Keep cut if it's a drawing boundary painted above image content.
+                    drawing_wins = (p in drawing_y1_on_top and top_kind == "drawing")
+                    # Fallback when paint-order info is unavailable.
+                    drawing_wins_fallback = (top_kind is None and p in drawing_y1_on_top)
+                    if not (drawing_wins or drawing_wins_fallback):
+                        is_inside_image = True
+                    break
             if is_inside_image:
+                continue
+
+            # Ignore image-top cuts only when drawing is actually on top at that y.
+            hide_img_top = (p in img_top_y_set and top_kind == "drawing")
+            # Fallback when paint-order info is unavailable.
+            hide_img_top_fallback = (top_kind is None and p in hidden_img_top_cuts)
+            if hide_img_top or hide_img_top_fallback:
                 continue
 
             is_img_boundary = p in img_y_set
             gap = p - final_cuts[-1]
 
             if is_img_boundary:
-                if gap > 5:
+                if gap > 0:
                     # If a nearby non-image cut precedes this, replace it so image wins
                     if gap < 40 and final_cuts[-1] not in img_y_set and final_cuts[-1] != 0:
                         final_cuts[-1] = p
-                    else:
+                    elif gap > 5:
                         final_cuts.append(p)
             elif gap > 40:
                 final_cuts.append(p)
