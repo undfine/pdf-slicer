@@ -69,6 +69,14 @@ The script includes robust error handling:
 
 ## Changelog
 
+### v3.0
+- Added configurable output width (accepts optional second argument, defaults to 1200px)
+- Implemented smart shrink-wrap logic: crops horizontally to image bounds when images occupy >50% slice width
+- Updated folder naming to include width specification (e.g., `prefix_Assets_1200px`)
+- Refactored code with configuration constants (DEFAULT_WIDTH, OUTPUT_SUBFOLDER_SUFFIX)
+- Changed output logging to display width instead of height
+- Removed manual error messages in favor of cleaner exit codes
+
 ### v2.0
 - Added image boundary detection alongside color block analysis
 - Improved cut refinement with "sliver detection" (reduced threshold from 100px to 40px)
