@@ -1,5 +1,8 @@
+import base64
+from datetime import datetime
 import fitz  # PyMuPDF
 import hashlib
+import json
 import os
 import re
 import sys
@@ -214,6 +217,81 @@ def _group_to_svg(group, group_rect, padding=4.0):
     return "\n".join(lines)
 
 
+def _find_buttons(page, candidates, page_width):
+    """
+    Detect button elements: a small filled rect that contains at least one text span.
+    Centre-point containment is used to avoid false positives near borders.
+
+    Returns:
+        buttons:         List of {paths, full_rect} dicts.
+        button_path_ids: set of id() values for paths consumed by buttons.
+    """
+    spans = []
+    try:
+        for block in page.get_text("dict", flags=0)["blocks"]:
+            if block.get("type") != 0:
+                continue
+            for line in block.get("lines", []):
+                for span in line.get("spans", []):
+                    if span.get("text", "").strip():
+                        spans.append(fitz.Rect(span["bbox"]))
+    except Exception:
+        return [], set()
+
+    btn_shapes = [
+        d for d in candidates
+        if 8 < d["rect"].height < 80
+        and 30 < d["rect"].width < page_width * 0.5
+        and d.get("fill") is not None
+    ]
+
+    buttons, used_ids = [], set()
+    for shape in btn_shapes:
+        if id(shape) in used_ids:
+            continue
+        d_rect = shape["rect"]
+        contained = [
+            s for s in spans
+            if d_rect.contains(fitz.Point((s.x0 + s.x1) / 2, (s.y0 + s.y1) / 2))
+        ]
+        if not contained:
+            continue
+        group_paths = []
+        for d in candidates:
+            if not (fitz.Rect(d["rect"]) & d_rect).is_empty:
+                group_paths.append(d)
+                used_ids.add(id(d))
+        full_rect = fitz.Rect(d_rect)
+        for s in contained:
+            full_rect |= s
+        buttons.append({"paths": group_paths, "full_rect": full_rect})
+    return buttons, used_ids
+
+
+def _button_to_svg(button, page, padding=4.0):
+    """
+    Render a button (vector shape + text) as an SVG file containing a
+    base64-encoded PNG image.  Custom PDF fonts cannot be expressed as SVG
+    <text> elements reliably, so a composited raster is used instead.
+    """
+    fr   = button["full_rect"]
+    clip = fitz.Rect(fr.x0 - padding, fr.y0 - padding, fr.x1 + padding, fr.y1 + padding)
+    pix  = page.get_pixmap(
+        matrix=fitz.Matrix(2, 2), clip=clip,
+        colorspace=fitz.csRGB, alpha=True,
+    )
+    b64 = base64.b64encode(pix.tobytes("png")).decode()
+    vw, vh = clip.width, clip.height
+    return "\n".join([
+        '<?xml version="1.0" encoding="utf-8"?>',
+        '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"',
+        f'     viewBox="0 0 {vw:.2f} {vh:.2f}" width="{vw:.2f}" height="{vh:.2f}">',
+        f'  <image x="0" y="0" width="{vw:.2f}" height="{vh:.2f}"',
+        f'         xlink:href="data:image/png;base64,{b64}"/>',
+        '</svg>',
+    ])
+
+
 def _cluster_drawings(drawings, proximity=15.0):
     """Group path drawings into spatial clusters via a single-pass sweep."""
     if not drawings:
@@ -302,9 +380,11 @@ def harvest_assets(page, output_folder):
     page_height = page.rect.height
     page_area   = page_width * page_height
 
-    seen_hashes  = set()
-    raster_count = 0
-    vector_count = 0
+    seen_hashes   = set()
+    raster_count  = 0
+    button_count  = 0
+    vector_count  = 0
+    assets        = []
 
     print("  [Harvest] Scanning page for logos and icons...")
 
@@ -358,14 +438,13 @@ def harvest_assets(page, output_folder):
                 fname = os.path.join(harvested_folder, f"logo_{raster_count:02d}.png")
                 pix.save(fname)
 
-        print(f"  [Harvest] Raster: {os.path.basename(fname)}  [{tag}]")
+        assets.append({"filename": fname, "type": "raster", "bbox": [bbox.x0, bbox.y0, bbox.x1, bbox.y1]})
+        print(f"  [Harvest] Raster:  {os.path.basename(fname)}  [{tag}]")
 
     # ----------------------------------------------------------------------- #
-    # PHASE B: Vector path clusters                                            #
+    # PHASE B: Vector elements — buttons first, then logos / icons            #
     # ----------------------------------------------------------------------- #
-    drawings = page.get_drawings()
-
-    # Exclude full-width background bands and hairlines; keep coloured shapes
+    drawings   = page.get_drawings()
     candidates = [
         d for d in drawings
         if d["rect"].width  < page_width * 0.8
@@ -374,31 +453,219 @@ def harvest_assets(page, output_folder):
         and (d.get("fill") is not None or d.get("color") is not None)
     ]
 
-    for group in _cluster_drawings(candidates, proximity=15.0):
+    # B1: BUTTONS — filled shape enclosing a text span
+    buttons, button_path_ids = _find_buttons(page, candidates, page_width)
+    for btn in buttons:
+        group_hash = _hash_drawing_group(btn["paths"], btn["full_rect"])
+        if group_hash in seen_hashes:
+            continue
+        seen_hashes.add(group_hash)
+        button_count += 1
+        fname = os.path.join(harvested_folder, f"button_{button_count:02d}.svg")
+        with open(fname, "w", encoding="utf-8") as f:
+            f.write(_button_to_svg(btn, page))
+        fr = btn["full_rect"]
+        assets.append({"filename": fname, "type": "button", "bbox": [fr.x0, fr.y0, fr.x1, fr.y1]})
+        print(f"  [Harvest] Button:  {os.path.basename(fname)}  [{int(fr.width)}\u00d7{int(fr.height)}pt]")
+
+    # B2: LOGOS / ICONS — remaining paths, small enough to be non-structural
+    logo_candidates = [d for d in candidates if id(d) not in button_path_ids]
+    for group in _cluster_drawings(logo_candidates, proximity=15.0):
         group_rect = group[0]["rect"]
         for d in group[1:]:
             group_rect |= d["rect"]
 
-        # Skip clusters that are too large to plausibly be a logo
-        if (group_rect.width * group_rect.height) / page_area > 0.25:
+        if (group_rect.width * group_rect.height) / page_area > 0.10:
             continue
 
         group_hash = _hash_drawing_group(group, group_rect)
         if group_hash in seen_hashes:
             continue
         seen_hashes.add(group_hash)
-
         vector_count += 1
         fname = os.path.join(harvested_folder, f"vector_{vector_count:02d}.svg")
         with open(fname, "w", encoding="utf-8") as f:
             f.write(_group_to_svg(group, group_rect))
+        assets.append({"filename": fname, "type": "vector", "bbox": [group_rect.x0, group_rect.y0, group_rect.x1, group_rect.y1]})
         print(
-            f"  [Harvest] Vector: {os.path.basename(fname)}  "
+            f"  [Harvest] Vector:  {os.path.basename(fname)}  "
             f"[{int(group_rect.width)}\u00d7{int(group_rect.height)}pt, {len(group)} path(s)]"
         )
 
-    total = raster_count + vector_count
-    print(f"  [Harvest] Done \u2014 {raster_count} raster + {vector_count} vector = {total} asset(s)")
+    total = raster_count + button_count + vector_count
+    print(f"  [Harvest] Done \u2014 {raster_count} raster + {button_count} button(s) + {vector_count} vector = {total} asset(s)")
+    return assets
+
+
+# =========================================================================== #
+# MANIFEST GENERATION                                                           #
+# =========================================================================== #
+
+def generate_manifest(pdf_path, page, slices, harvested_assets, output_folder, target_width):
+    """
+    Generate a manifest.json blueprint for Maizzle / HTML email code generation.
+
+    The manifest captures:
+      - Metadata: source PDF name, target width, UTC timestamp.
+      - Slices:   Each rendered slice with its y-coordinates, top-layer kind,
+                  and all text lines it contains (grouped by font / size / colour).
+      - Assets:   All files written to the /Harvested sub-folder, with their
+                  original page bounding-box coordinates.
+
+    Args:
+        pdf_path:         Absolute path to the source PDF.
+        page:             PyMuPDF Page object (page 0).
+        slices:           List of {filename, y0, y1, top_layer_kind} dicts.
+        harvested_assets: List of {filename, type, bbox} dicts from harvest_assets().
+        output_folder:    The root _Assets directory (manifest.json is saved here).
+        target_width:     Integer pixel width used when rendering slices.
+    """
+
+    def _color_to_hex(val):
+        """Convert a PyMuPDF colour value to a CSS #rrggbb string."""
+        if val is None:
+            return None
+        if isinstance(val, (tuple, list)):
+            r, g, b = [max(0, min(255, int(c * 255))) for c in val[:3]]
+            return f"#{r:02x}{g:02x}{b:02x}"
+        if isinstance(val, int):
+            return f"#{val & 0xFFFFFF:06x}"
+        return None
+
+    # ---------------------------------------------------------------------- #
+    # Extract every non-empty text span from the page                         #
+    # ---------------------------------------------------------------------- #
+    all_spans = []
+    try:
+        blocks = page.get_text("dict", flags=0)["blocks"]
+    except Exception:
+        blocks = []
+
+    for block in blocks:
+        if block.get("type") != 0:
+            continue
+        for line in block.get("lines", []):
+            for span in line.get("spans", []):
+                raw = span.get("text", "").replace("\n", " ").strip()
+                if not raw:
+                    continue
+                bb = span["bbox"]
+                all_spans.append({
+                    "text":  raw,
+                    "font":  span.get("font", ""),
+                    "size":  round(span.get("size", 0), 2),
+                    "color": _color_to_hex(span.get("color")),
+                    "bbox":  [round(v, 2) for v in bb],
+                    "_cy":   (bb[1] + bb[3]) / 2.0,
+                })
+
+    # ---------------------------------------------------------------------- #
+    # Map spans to slices and group into text lines                           #
+    # ---------------------------------------------------------------------- #
+    enriched_slices = []
+    for sl in slices:
+        y0, y1 = sl["y0"], sl["y1"]
+
+        # Spans whose vertical centre falls within this slice
+        slice_spans = sorted(
+            [s for s in all_spans if y0 <= s["_cy"] < y1],
+            key=lambda s: (s["_cy"], s["bbox"][0]),
+        )
+
+        # Group spans into logical lines (same font+size+colour, close y-centre)
+        text_lines = []
+        for span in slice_spans:
+            tolerance = max(span["size"] * 0.10, 1.0)
+            matched = False
+            for ln in reversed(text_lines):
+                ref = ln["_ref"]
+                if (
+                    ref["font"]  == span["font"]
+                    and ref["size"]  == span["size"]
+                    and ref["color"] == span["color"]
+                    and abs(ref["_cy"] - span["_cy"]) <= tolerance
+                ):
+                    ln["text"] += " " + span["text"]
+                    ln["bbox"] = [
+                        min(ln["bbox"][0], span["bbox"][0]),
+                        min(ln["bbox"][1], span["bbox"][1]),
+                        max(ln["bbox"][2], span["bbox"][2]),
+                        max(ln["bbox"][3], span["bbox"][3]),
+                    ]
+                    ln["spans"].append(span)
+                    matched = True
+                    break
+            if not matched:
+                text_lines.append({
+                    "text":  span["text"],
+                    "font":  span["font"],
+                    "size":  span["size"],
+                    "color": span["color"],
+                    "bbox":  list(span["bbox"]),
+                    "spans": [span],
+                    "_ref":  span,
+                })
+
+        # Strip internal keys; omit "spans" sub-list when only one span
+        clean_lines = []
+        for ln in text_lines:
+            entry = {
+                "text":  ln["text"],
+                "font":  ln["font"],
+                "size":  ln["size"],
+                "color": ln["color"],
+                "bbox":  ln["bbox"],
+            }
+            if len(ln["spans"]) > 1:
+                entry["spans"] = [
+                    {k: v for k, v in s.items() if k != "_cy"}
+                    for s in ln["spans"]
+                ]
+            clean_lines.append(entry)
+
+        enriched_slices.append({
+            "filename":       os.path.basename(sl["filename"]),
+            "y0":             sl["y0"],
+            "y1":             sl["y1"],
+            "top_layer_kind": sl["top_layer_kind"],
+            "text_lines":     clean_lines,
+        })
+
+    # ---------------------------------------------------------------------- #
+    # Build asset registry                                                     #
+    # ---------------------------------------------------------------------- #
+    asset_registry = [
+        {
+            "filename": os.path.basename(a["filename"]),
+            "type":     a["type"],
+            "bbox":     [round(v, 2) for v in a["bbox"]],
+        }
+        for a in (harvested_assets or [])
+    ]
+
+    # ---------------------------------------------------------------------- #
+    # Assemble and write manifest.json                                         #
+    # ---------------------------------------------------------------------- #
+    manifest = {
+        "meta": {
+            "source":       os.path.basename(pdf_path),
+            "target_width": target_width,
+            "generated_at": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+        },
+        "slices": enriched_slices,
+        "assets": asset_registry,
+    }
+
+    out_path = os.path.join(output_folder, "manifest.json")
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(manifest, f, indent=2, ensure_ascii=False)
+
+    total_lines = sum(len(sl["text_lines"]) for sl in enriched_slices)
+    print(
+        f"  [Manifest] Saved manifest.json "
+        f"({len(enriched_slices)} slice(s), {total_lines} text line(s), "
+        f"{len(asset_registry)} asset(s))"
+    )
 
 
 # =========================================================================== #
@@ -428,9 +695,10 @@ def run_slicer(pdf_path, target_width):
     matrix = fitz.Matrix(zoom, zoom)
 
     # 0. ASSET HARVESTING
-    harvest_assets(page, output_folder)
+    harvested_assets = harvest_assets(page, output_folder)
 
     # 1. GATHER ALL POTENTIAL CUT POINTS (Horizontal Y-coordinates)
+    slices_data = []
     drawings = page.get_drawings()
     raw_cuts = [0, height]
     section_drawings = []  # wide filled rects that act as section separators
@@ -578,8 +846,20 @@ def run_slicer(pdf_path, target_width):
             pix.save(filename, "jpg", jpg_quality=95)
         else:
             pix.save(filename)
-            
+
+        mid_y = (y0 + y1) / 2.0
+        top_layer_kind = get_top_layer_kind_at_y(page, width, mid_y) or (
+            "image" if ext == ".jpg" else "text"
+        )
+        slices_data.append({
+            "filename":       filename,
+            "y0":             y0,
+            "y1":             y1,
+            "top_layer_kind": top_layer_kind,
+        })
         print(f" - Saved {os.path.basename(filename)} (Width: {pix.width}px)")
+
+    generate_manifest(abs_pdf_path, page, slices_data, harvested_assets, output_folder, target_width)
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
