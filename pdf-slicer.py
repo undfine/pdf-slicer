@@ -10,6 +10,25 @@ OUTPUT_SUBFOLDER_SUFFIX = "_Assets"
 # The number of original PDF points to shave off image edges to avoid borders
 EDGE_INSET = 2.0  
 
+def has_image_to_image_continuity_at_y(img_boxes, y, page_width, y_tolerance=6.0, min_width_ratio=0.6, min_overlap_ratio=0.5):
+    """
+    True when y looks like an internal seam between two wide images that visually
+    continue into each other (typical of hero composites / overlays).
+    """
+    min_img_width = page_width * min_width_ratio
+    min_x_overlap = page_width * min_overlap_ratio
+
+    ending = [b for b in img_boxes if abs(b.y1 - y) <= y_tolerance and b.width >= min_img_width]
+    starting = [b for b in img_boxes if abs(b.y0 - y) <= y_tolerance and b.width >= min_img_width]
+
+    for upper in ending:
+        for lower in starting:
+            overlap = min(upper.x1, lower.x1) - max(upper.x0, lower.x0)
+            if overlap >= min_x_overlap:
+                return True
+
+    return False
+
 def get_top_layer_kind_at_y(page, page_width, y, y_tolerance=1.0, min_width_ratio=0.8):
     """
     Returns which object kind is topmost around y for near-full-width objects:
@@ -148,28 +167,70 @@ def run_slicer(pdf_path, target_width):
         raw_cuts.append(round(box.y0))
         raw_cuts.append(round(box.y1))
 
-    # Pre-compute fallback z-order proxy: map drawing y1 -> drawing rect for wide rects that
-    # START at or before an image's top edge. In PDF paint order, a drawing rendered
-    # on top of an image covers its top — matching y0 positions reveal this stacking.
-    # These sets are used only when paint-order data is unavailable.
-    drawing_y1_on_top = {}
-    hidden_img_top_cuts = set()
-    drawing_y_set = set()
-    img_top_y_set = set()
-    for drect in section_drawings:
-        drawing_y_set.add(round(drect.y0))
-        drawing_y_set.add(round(drect.y1))
-        for box in img_boxes:
-            img_top_y_set.add(round(box.y0))
-            if drect.y0 <= box.y0 + 5 and drect.y1 > box.y0 + 5:
-                # This drawing overlays the top of an image → it has higher z-index
-                drawing_y1_on_top[round(drect.y1)] = drect
-                # The image top is visually hidden under the drawing, so don't cut there.
-                hidden_img_top_cuts.add(round(box.y0))
+    # 2. BUILD SUPPRESSION RULES (width-based priority + z-order awareness)
+    # Wide images (≥80% width) are structural - only suppress if drawing truly overlays
+    # Narrow images (<80% width) are content - apply all suppression rules
+    suppress_y = set()
+    width_threshold = width * 0.8
 
-    # 2. REFINE THE CUTS - image boundaries take priority over drawing cuts,
-    #    EXCEPT when a drawing is painted on top of an image (higher z-index).
+    # Classify images by width
+    wide_images = [box for box in img_boxes if box.width >= width_threshold]
+    narrow_images = [box for box in img_boxes if box.width < width_threshold]
+
+    # WIDE IMAGES: Only suppress if drawing starts BEFORE image (structural overlay)
+    for img_box in wide_images:
+        for elem in section_drawings:
+            # Suppress top if drawing starts before and extends into image (header case)
+            if elem.y0 < img_box.y0 - 5 and elem.y1 > img_box.y0 + 5:
+                suppress_y.add(round(img_box.y0))
+            
+            # Suppress bottom if drawing starts before and extends past (full background case)
+            if elem.y0 < img_box.y0 - 5 and elem.y1 > img_box.y1 + 5:
+                suppress_y.add(round(img_box.y1))
+
+    # NARROW IMAGES: Apply all suppression rules (they're content, not section boundaries)
+    for img_box in narrow_images:
+        for elem in section_drawings:
+            # Suppress if drawing overlays from above
+            if elem.y0 < img_box.y0 - 5 and elem.y1 > img_box.y0 + 5:
+                suppress_y.add(round(img_box.y0))
+            
+            # Suppress if drawing extends past bottom
+            if elem.y0 < img_box.y0 - 5 and elem.y1 > img_box.y1 + 5:
+                suppress_y.add(round(img_box.y1))
+
+    # ALL IMAGES: Suppress drawings fully contained inside (decorative overlays)
+    for img_box in img_boxes:
+        for elem in section_drawings:
+            if elem.y0 > img_box.y0 + 5 and elem.y1 < img_box.y1 - 5:
+                suppress_y.add(round(elem.y0))
+                suppress_y.add(round(elem.y1))
+
+    # Merge only truly intersecting images (both vertical AND horizontal overlap)
+    for i, img1 in enumerate(img_boxes):
+        for j, img2 in enumerate(img_boxes):
+            if i >= j:
+                continue
+            # Check both vertical and horizontal intersection
+            v_overlap = img1.y0 < img2.y1 - 5 and img2.y0 < img1.y1 - 5
+            h_overlap = img1.x0 < img2.x1 - 5 and img2.x0 < img1.x1 - 5
+            
+            # Only merge if they truly intersect in both dimensions
+            if v_overlap and h_overlap:
+                # Suppress the boundary between intersecting images
+                if img1.y1 < img2.y1:
+                    suppress_y.add(round(img1.y1))
+                else:
+                    suppress_y.add(round(img2.y1))
+
+    # 3. REFINE THE CUTS - wide image boundaries are primary section delimiters
+    # Build sets for quick lookup
     img_y_set = set()
+    wide_img_y_set = set()
+    for box in wide_images:
+        wide_img_y_set.add(round(box.y0))
+        wide_img_y_set.add(round(box.y1))
+    
     for box in img_boxes:
         img_y_set.add(round(box.y0))
         img_y_set.add(round(box.y1))
@@ -178,45 +239,29 @@ def run_slicer(pdf_path, target_width):
     final_cuts = [0]
     for p in sorted_cuts:
         if 0 < p < height:
-            top_kind = get_top_layer_kind_at_y(page, width, p)
-
-            is_inside_image = False
-            for box in img_boxes:
-                if box.y0 + 5 < p < box.y1 - 5:
-                    # p is geometrically inside this image.
-                    # Keep cut if it's a drawing boundary painted above image content.
-                    drawing_wins = (p in drawing_y1_on_top and top_kind == "drawing")
-                    # Fallback when paint-order info is unavailable.
-                    drawing_wins_fallback = (top_kind is None and p in drawing_y1_on_top)
-                    if not (drawing_wins or drawing_wins_fallback):
-                        is_inside_image = True
-                    break
-            if is_inside_image:
+            # Skip any cuts explicitly suppressed by overlap/element rules
+            if p in suppress_y:
                 continue
 
-            # Ignore image-top cuts only when drawing is actually on top at that y.
-            hide_img_top = (p in img_top_y_set and top_kind == "drawing")
-            # Fallback when paint-order info is unavailable.
-            hide_img_top_fallback = (top_kind is None and p in hidden_img_top_cuts)
-            if hide_img_top or hide_img_top_fallback:
-                continue
-
-            is_img_boundary = p in img_y_set
+            # Prioritize cuts based on type
+            is_wide_img_boundary = p in wide_img_y_set
+            is_narrow_img_boundary = (p in img_y_set) and (p not in wide_img_y_set)
             gap = p - final_cuts[-1]
-
-            if is_img_boundary:
-                if gap > 0:
-                    # If a nearby non-image cut precedes this, replace it so image wins
-                    if gap < 40 and final_cuts[-1] not in img_y_set and final_cuts[-1] != 0:
-                        final_cuts[-1] = p
-                    elif gap > 5:
-                        final_cuts.append(p)
+            
+            # Wide image boundaries: always add (unless suppressed above)
+            if is_wide_img_boundary:
+                if gap > 5:
+                    final_cuts.append(p)
+                elif gap > 0 and final_cuts[-1] not in img_y_set and final_cuts[-1] != 0:
+                    # Replace nearby non-image cut with wide image boundary
+                    final_cuts[-1] = p
+            # Narrow image boundaries and drawings: require minimum gap
             elif gap > 40:
                 final_cuts.append(p)
 
     if final_cuts[-1] < height: final_cuts.append(height)
 
-    # 3. RENDER SLICES
+    # 4. RENDER SLICES
     for i in range(len(final_cuts) - 1):
         y0, y1 = final_cuts[i], final_cuts[i+1]
         

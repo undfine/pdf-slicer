@@ -69,6 +69,14 @@ The script includes robust error handling:
 
 ## Changelog
 
+### v6.0
+- Added `has_image_to_image_continuity_at_y()` to detect image composites and overlays
+- Implemented width-based image classification: wide images (≥80%) vs narrow images (<80%)
+- Sophisticated suppression rules based on image width and z-order relationships
+- Smart handling of intersecting images to avoid cutting through composites
+- Wide image boundaries now prioritized as primary section delimiters
+- Enhanced structural vs content image differentiation for better slice accuracy
+
 ### v5.2
 - Added z-order detection using `page.get_bboxlog()` for advanced paint order analysis
 - New `get_top_layer_kind_at_y()` function to determine which element type is on top at specific Y coordinates
