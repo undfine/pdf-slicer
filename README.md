@@ -69,6 +69,12 @@ The script includes robust error handling:
 
 ## Changelog
 
+### v4.0
+- Added edge inset feature (EDGE_INSET = 2.0pt) to remove borders from extracted images
+- Enhanced shrink-wrap logic: now applies inset to all four sides of cropped images
+- Improved rendering with alpha=False for cleaner edges (flattens transparency to white)
+- Better error handling with proper exit codes
+
 ### v3.0
 - Added configurable output width (accepts optional second argument, defaults to 1200px)
 - Implemented smart shrink-wrap logic: crops horizontally to image bounds when images occupy >50% slice width

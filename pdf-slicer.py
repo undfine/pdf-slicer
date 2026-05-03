@@ -7,6 +7,9 @@ import sys
 DEFAULT_WIDTH = 1200  
 OUTPUT_SUBFOLDER_SUFFIX = "_Assets"
 
+# The number of original PDF points to shave off image edges to avoid borders
+EDGE_INSET = 2.0  
+
 def get_abbreviated_prefix(filepath):
     base_name = os.path.splitext(os.path.basename(filepath))[0]
     parts = re.split(r'[\s-]', base_name)
@@ -44,7 +47,12 @@ def run_slicer(pdf_path, target_width):
     if not os.path.exists(output_folder):
         os.makedirs(output_folder)
 
-    doc = fitz.open(abs_pdf_path)
+    try:
+        doc = fitz.open(abs_pdf_path)
+    except Exception as e:
+        print(f"Error opening PDF: {e}")
+        sys.exit(1)
+
     page = doc[0]
     width, height = page.rect.width, page.rect.height
     
@@ -90,11 +98,20 @@ def run_slicer(pdf_path, target_width):
         # --- SHRINK-WRAP LOGIC ---
         # If an image takes up > 50% of the slice width, crop to its X bounds
         if dom_rect and dom_rect.width > (width * 0.5):
-            # Only crop horizontally (X), keep our calculated Y cuts
-            clip = fitz.Rect(dom_rect.x0, y0, dom_rect.x1, y1)
+            # NEW: Apply the negative margin (inset) to all four sides
+            # This shaves off 2pt from top, bottom, left, and right.
+            inset_x0 = dom_rect.x0 + EDGE_INSET
+            inset_y0 = y0 + EDGE_INSET
+            inset_x1 = dom_rect.x1 - EDGE_INSET
+            inset_y1 = y1 - EDGE_INSET
+            
+            # Re-create the clip with the tighter bounds
+            clip = fitz.Rect(inset_x0, inset_y0, inset_x1, inset_y1)
 
         ext = ".jpg" if coverage > 0.7 else ".png"
-        pix = page.get_pixmap(matrix=matrix, clip=clip, colorspace=fitz.csRGB)
+        
+        # IMPORTANT: Use alpha=False for cleaner edges (flatten to white)
+        pix = page.get_pixmap(matrix=matrix, clip=clip, colorspace=fitz.csRGB, alpha=False)
         
         filename = os.path.join(output_folder, f"{prefix}_slice_{i+1:02d}{ext}")
         if ext == ".jpg":
