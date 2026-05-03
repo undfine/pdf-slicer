@@ -95,17 +95,33 @@ def run_slicer(pdf_path, target_width):
         raw_cuts.append(round(box.y0))
         raw_cuts.append(round(box.y1))
 
-    # 2. REFINE THE CUTS
+    # 2. REFINE THE CUTS - image boundaries take priority over drawing cuts
+    img_y_set = set()
+    for box in img_boxes:
+        img_y_set.add(round(box.y0))
+        img_y_set.add(round(box.y1))
+
     sorted_cuts = sorted(list(set(raw_cuts)))
     final_cuts = [0]
     for p in sorted_cuts:
-        if 0 < p < height and p - final_cuts[-1] > 40:
-            is_inside_another_image = False
-            for box in img_boxes:
-                if box.y0 + 5 < p < box.y1 - 5:
-                    is_inside_another_image = True; break
-            if not is_inside_another_image:
+        if 0 < p < height:
+            is_inside_image = any(box.y0 + 5 < p < box.y1 - 5 for box in img_boxes)
+            if is_inside_image:
+                continue
+
+            is_img_boundary = p in img_y_set
+            gap = p - final_cuts[-1]
+
+            if is_img_boundary:
+                if gap > 5:
+                    # If a nearby non-image cut precedes this, replace it so image wins
+                    if gap < 40 and final_cuts[-1] not in img_y_set and final_cuts[-1] != 0:
+                        final_cuts[-1] = p
+                    else:
+                        final_cuts.append(p)
+            elif gap > 40:
                 final_cuts.append(p)
+
     if final_cuts[-1] < height: final_cuts.append(height)
 
     # 3. RENDER SLICES

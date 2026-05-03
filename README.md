@@ -69,6 +69,12 @@ The script includes robust error handling:
 
 ## Changelog
 
+### v5.1
+- Refined cut prioritization: image boundaries now take precedence over drawing boundaries
+- Smart boundary replacement: image cuts can replace nearby non-image cuts within 40px
+- Improved handling of close-proximity cuts for cleaner slice boundaries
+- Better edge case handling with minimum 5px gap requirement
+
 ### v5.0
 - Added `get_combined_image_bounds()` to handle multiple images in a single slice
 - Refined shrink-wrap logic: only applies to JPG slices (high image coverage), not PNGs
