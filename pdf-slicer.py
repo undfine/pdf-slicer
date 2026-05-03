@@ -505,12 +505,18 @@ def generate_manifest(pdf_path, page, slices, harvested_assets, output_folder, t
     """
     Generate a manifest.json blueprint for Maizzle / HTML email code generation.
 
-    The manifest captures:
-      - Metadata: source PDF name, target width, UTC timestamp.
-      - Slices:   Each rendered slice with its y-coordinates, top-layer kind,
-                  and all text lines it contains (grouped by font / size / colour).
-      - Assets:   All files written to the /Harvested sub-folder, with their
-                  original page bounding-box coordinates.
+    Span extraction uses page.get_text("dict"). All spans are sorted globally by
+    (y0, x0) and then merged spatially into logical text lines.  A span B is
+    merged into the rightmost open line A when ALL of the following hold:
+      - Baseline match:  |A.y1 - B.y1| < 3pt
+      - Style match:     same font, size, colour
+      - X-proximity:     B.x0 - A.x1 < A.size * 1.5
+        (the generous threshold handles wide tracking gaps between PDF
+        "character cluster" spans, while still stopping at paragraph breaks)
+
+    Tracked / letter-spaced text is detected from the PyMuPDF-injected spaces
+    in the span text (single spaces = tracking gap, double-space = word gap).
+    Detected tracking is cleaned and a CSS letter_spacing (em) is emitted.
 
     Args:
         pdf_path:         Absolute path to the source PDF.
@@ -532,12 +538,98 @@ def generate_manifest(pdf_path, page, slices, harvested_assets, output_folder, t
             return f"#{val & 0xFFFFFF:06x}"
         return None
 
+    def _extract_span_text(chars, size):
+        """
+        Reconstruct span text from rawdict character list using a two-pass
+        approach, cleanly handling PDF letter-tracking / character-spacing.
+
+        Pass 1 — Measure tracking: compute gaps between consecutive VISIBLE
+        chars (those not separated by a space char). If the median positive gap
+        is >= 0.5pt the span is considered letter-tracked.
+
+        Pass 2 — Rebuild text: space chars are skipped; each run of space chars
+        is evaluated to decide whether it's a word boundary:
+          - 2+ consecutive space chars → always a word boundary (add " ")
+          - 1 space char, width >= median_gap × 1.8 → word boundary (add " ")
+          - 1 space char, width < threshold → tracking artefact (skip)
+
+        letter_spacing is expressed in CSS em units (median_gap / font_size).
+
+        Returns: (text, letter_spacing_em_or_None)
+        """
+        if not chars:
+            return "", None
+
+        sz = float(size or 12.0)
+
+        # --- Pass 1: intra-cluster gaps (consecutive visible chars only) ------
+        intra_gaps = []
+        for i in range(len(chars) - 1):
+            a, b = chars[i], chars[i + 1]
+            if a.get("c", "").strip() and b.get("c", "").strip():
+                g = b["bbox"][0] - a["bbox"][2]
+                if g > 0.3:
+                    intra_gaps.append(g)
+
+        if len(intra_gaps) < 2:
+            # Not enough intra-cluster evidence → not tracked, return raw join
+            return "".join(ch.get("c", "") for ch in chars).replace("\n", " ").strip(), None
+
+        sorted_gaps = sorted(intra_gaps)
+        median_gap  = sorted_gaps[len(sorted_gaps) // 2]
+
+        if median_gap < 0.5:
+            # Gap too tight to be tracking
+            return "".join(ch.get("c", "") for ch in chars).replace("\n", " ").strip(), None
+
+        ls_em       = round(median_gap / sz, 3)
+        word_thresh = median_gap * 1.8  # word-space width is reliably wider than tracking gap
+
+        # Bail-out: if no double-space runs exist in the char sequence, PyMuPDF
+        # couldn't confidently locate any word boundary either (word-spacing ==
+        # letter-spacing in this font).  Preserve the raw char text and only emit
+        # the letter_spacing measurement — don't attempt destructive cleaning.
+        has_double_space = any(
+            not chars[i].get("c", "").strip() and not chars[i + 1].get("c", "").strip()
+            for i in range(len(chars) - 1)
+        )
+        if not has_double_space:
+            raw = "".join(ch.get("c", "") for ch in chars).replace("\n", " ").strip()
+            return raw, ls_em
+
+        # --- Pass 2: rebuild text, skip space chars, detect word boundaries ---
+        result      = []
+        space_run   = 0
+        space_run_w = 0.0
+
+        for ch in chars:
+            c = ch.get("c", "")
+            if not c.strip():               # space / control char
+                space_run   += 1
+                space_run_w += ch["bbox"][2] - ch["bbox"][0]
+            else:                           # visible glyph
+                if result:                  # not the first visible char
+                    is_word_boundary = (
+                        space_run >= 2
+                        or (space_run == 1 and space_run_w >= word_thresh)
+                    )
+                    if is_word_boundary:
+                        result.append(" ")
+                result.append(c)
+                space_run   = 0
+                space_run_w = 0.0
+
+        return "".join(result).strip(), ls_em
+
     # ---------------------------------------------------------------------- #
-    # Extract every non-empty text span from the page                         #
+    # 1.  Extract all non-empty spans via rawdict (per-char bboxes required   #
+    #     for accurate word-boundary detection in tracked display type).      #
+    #     Text is reconstructed from the character list; rawdict spans do not #
+    #     carry a top-level "text" key.                                       #
     # ---------------------------------------------------------------------- #
-    all_spans = []
+    raw_spans = []
     try:
-        blocks = page.get_text("dict", flags=0)["blocks"]
+        blocks = page.get_text("rawdict", flags=0)["blocks"]
     except Exception:
         blocks = []
 
@@ -546,69 +638,83 @@ def generate_manifest(pdf_path, page, slices, harvested_assets, output_folder, t
             continue
         for line in block.get("lines", []):
             for span in line.get("spans", []):
-                raw = span.get("text", "").replace("\n", " ").strip()
-                if not raw:
+                chars = span.get("chars", [])
+                if not chars:
+                    continue
+                sz          = span.get("size", 0) or 0
+                text, ls_em = _extract_span_text(chars, sz)
+                text        = text.replace("\n", " ").strip()
+                if not text:
                     continue
                 bb = span["bbox"]
-                all_spans.append({
-                    "text":  raw,
-                    "font":  span.get("font", ""),
-                    "size":  round(span.get("size", 0), 2),
-                    "color": _color_to_hex(span.get("color")),
-                    "bbox":  [round(v, 2) for v in bb],
-                    "_cy":   (bb[1] + bb[3]) / 2.0,
+                raw_spans.append({
+                    "text":           text,
+                    "font":           span.get("font", ""),
+                    "size":           round(sz, 2),
+                    "color":          _color_to_hex(span.get("color")),
+                    "letter_spacing": ls_em,
+                    "bbox":           [round(v, 2) for v in bb],
                 })
 
     # ---------------------------------------------------------------------- #
-    # Map spans to slices and group into text lines                           #
+    # 2.  Sort globally: top-to-bottom (y0), then left-to-right (x0)         #
+    # ---------------------------------------------------------------------- #
+    raw_spans.sort(key=lambda s: (s["bbox"][1], s["bbox"][0]))
+
+    # ---------------------------------------------------------------------- #
+    # 3.  Spatial merge into logical text lines                               #
+    #     Merge span B into line A when:                                      #
+    #       a) baseline match  — |A.y1 - B.y1| < 3pt                        #
+    #       b) style match     — same font, size, colour, letter_spacing      #
+    #       c) x-proximity     — B.x0 - A.x1 < A.size * 1.5                 #
+    # ---------------------------------------------------------------------- #
+    merged_lines = []
+    for span in raw_spans:
+        merged = False
+        for ln in reversed(merged_lines):
+            baseline_diff = abs(ln["bbox"][3] - span["bbox"][3])
+            x_gap         = span["bbox"][0] - ln["bbox"][2]   # B.x0 - A.x1
+            if (
+                baseline_diff < 3.0
+                and ln["font"]           == span["font"]
+                and ln["size"]           == span["size"]
+                and ln["color"]          == span["color"]
+                and ln["letter_spacing"] == span["letter_spacing"]
+                and x_gap < ln["size"] * 1.5
+            ):
+                # Tracked spans: use the x-gap vs letter-spacing to decide whether
+                # to insert a word-boundary space between the two spans.
+                if ln["letter_spacing"] is not None:
+                    ls_pt = ln["letter_spacing"] * ln["size"]  # em → pt
+                    sep   = " " if x_gap >= ls_pt * 1.8 else ""
+                else:
+                    sep = " "
+                ln["text"] += sep + span["text"]
+                ln["bbox"]  = [
+                    min(ln["bbox"][0], span["bbox"][0]),
+                    min(ln["bbox"][1], span["bbox"][1]),
+                    max(ln["bbox"][2], span["bbox"][2]),
+                    max(ln["bbox"][3], span["bbox"][3]),
+                ]
+                merged = True
+                break
+        if not merged:
+            merged_lines.append(dict(span))
+
+    # ---------------------------------------------------------------------- #
+    # 4.  Map merged lines to their containing slice (by vertical centre)     #
     # ---------------------------------------------------------------------- #
     enriched_slices = []
     for sl in slices:
         y0, y1 = sl["y0"], sl["y1"]
+        slice_lines = [
+            ln for ln in merged_lines
+            if y0 <= (ln["bbox"][1] + ln["bbox"][3]) / 2.0 < y1
+        ]
+        slice_lines.sort(key=lambda ln: (ln["bbox"][1], ln["bbox"][0]))
 
-        # Spans whose vertical centre falls within this slice
-        slice_spans = sorted(
-            [s for s in all_spans if y0 <= s["_cy"] < y1],
-            key=lambda s: (s["_cy"], s["bbox"][0]),
-        )
-
-        # Group spans into logical lines (same font+size+colour, close y-centre)
-        text_lines = []
-        for span in slice_spans:
-            tolerance = max(span["size"] * 0.10, 1.0)
-            matched = False
-            for ln in reversed(text_lines):
-                ref = ln["_ref"]
-                if (
-                    ref["font"]  == span["font"]
-                    and ref["size"]  == span["size"]
-                    and ref["color"] == span["color"]
-                    and abs(ref["_cy"] - span["_cy"]) <= tolerance
-                ):
-                    ln["text"] += " " + span["text"]
-                    ln["bbox"] = [
-                        min(ln["bbox"][0], span["bbox"][0]),
-                        min(ln["bbox"][1], span["bbox"][1]),
-                        max(ln["bbox"][2], span["bbox"][2]),
-                        max(ln["bbox"][3], span["bbox"][3]),
-                    ]
-                    ln["spans"].append(span)
-                    matched = True
-                    break
-            if not matched:
-                text_lines.append({
-                    "text":  span["text"],
-                    "font":  span["font"],
-                    "size":  span["size"],
-                    "color": span["color"],
-                    "bbox":  list(span["bbox"]),
-                    "spans": [span],
-                    "_ref":  span,
-                })
-
-        # Strip internal keys; omit "spans" sub-list when only one span
         clean_lines = []
-        for ln in text_lines:
+        for ln in slice_lines:
             entry = {
                 "text":  ln["text"],
                 "font":  ln["font"],
@@ -616,11 +722,8 @@ def generate_manifest(pdf_path, page, slices, harvested_assets, output_folder, t
                 "color": ln["color"],
                 "bbox":  ln["bbox"],
             }
-            if len(ln["spans"]) > 1:
-                entry["spans"] = [
-                    {k: v for k, v in s.items() if k != "_cy"}
-                    for s in ln["spans"]
-                ]
+            if ln["letter_spacing"] is not None:
+                entry["letter_spacing"] = ln["letter_spacing"]
             clean_lines.append(entry)
 
         enriched_slices.append({
@@ -632,7 +735,7 @@ def generate_manifest(pdf_path, page, slices, harvested_assets, output_folder, t
         })
 
     # ---------------------------------------------------------------------- #
-    # Build asset registry                                                     #
+    # 5.  Asset registry                                                       #
     # ---------------------------------------------------------------------- #
     asset_registry = [
         {
@@ -644,7 +747,7 @@ def generate_manifest(pdf_path, page, slices, harvested_assets, output_folder, t
     ]
 
     # ---------------------------------------------------------------------- #
-    # Assemble and write manifest.json                                         #
+    # 6.  Write manifest.json                                                  #
     # ---------------------------------------------------------------------- #
     manifest = {
         "meta": {

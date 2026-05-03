@@ -2,7 +2,7 @@
   "meta": {
     "source": "test.pdf",
     "target_width": 1200,
-    "generated_at": "2026-05-03T13:43:51Z"
+    "generated_at": "2026-05-03T14:42:52Z"
   },
   "slices": [
     {
@@ -12,7 +12,7 @@
       "top_layer_kind": "drawing",
       "text_lines": [
         {
-          "text": "P R ACTI CA L LY P ER F ECT  I N EVERY WAY.",
+          "text": "PRACTICALLYPERFECT INEVERYWAY.",
           "font": "FieldGothic-No.43MedCond",
           "size": 20.6,
           "color": "#5f5740",
@@ -21,10 +21,11 @@
             603.4,
             501.14,
             624.32
-          ]
+          ],
+          "letter_spacing": 0.143
         },
         {
-          "text": "I T ’ S S OR T  OF  OUR",
+          "text": "IT’S SORT OF OUR",
           "font": "NimbusSanExt-Bol",
           "size": 23.69,
           "color": "#5f5740",
@@ -33,7 +34,8 @@
             634.1,
             480.7,
             663.9
-          ]
+          ],
+          "letter_spacing": 0.15
         },
         {
           "text": "M I S SI ON STAT EMEN T.",
@@ -45,7 +47,8 @@
             664.1,
             502.18,
             693.9
-          ]
+          ],
+          "letter_spacing": 0.15
         },
         {
           "text": "You’re trying to pick the perfect club community. Let us help",
@@ -117,7 +120,8 @@
             849.62,
             401.45,
             863.97
-          ]
+          ],
+          "letter_spacing": 0.1
         }
       ]
     },
@@ -135,7 +139,7 @@
       "top_layer_kind": "drawing",
       "text_lines": [
         {
-          "text": "I T ’ S ALL R I G H T  H ER E.",
+          "text": "IT’S ALL RIGHT HERE.",
           "font": "NimbusSanExt-Bol",
           "size": 23.69,
           "color": "#ffffff",
@@ -144,7 +148,8 @@
             1159.12,
             499.74,
             1188.92
-          ]
+          ],
+          "letter_spacing": 0.15
         },
         {
           "text": "Eighteen perfectly manicured holes of our championship golf",
@@ -231,10 +236,11 @@
             1723.65,
             426.16,
             1744.58
-          ]
+          ],
+          "letter_spacing": 0.15
         },
         {
-          "text": "J O I N U S  F O R  A  D IS C OV E RY  TO U R .",
+          "text": "JOINUS FOR A DISCOVERY TOUR.",
           "font": "FieldGothic-No.43MedCond",
           "size": 26.99,
           "color": "#f9f8f6",
@@ -243,7 +249,8 @@
             1753.95,
             543.45,
             1781.37
-          ]
+          ],
+          "letter_spacing": 0.143
         },
         {
           "text": "The only way to take in all that is WindRiver is to visit.",
@@ -315,7 +322,8 @@
             2178.93,
             373.76,
             2193.29
-          ]
+          ],
+          "letter_spacing": 0.1
         }
       ]
     },
@@ -335,7 +343,8 @@
             2308.42,
             454.14,
             2335.51
-          ]
+          ],
+          "letter_spacing": 0.15
         },
         {
           "text": "1 7 0 1 2  L I G H T H O U S E  P O I N T E  D R I V E",
@@ -467,7 +476,8 @@
             2948.57,
             371.62,
             2962.93
-          ]
+          ],
+          "letter_spacing": 0.1
         }
       ]
     },
