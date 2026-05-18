@@ -420,14 +420,14 @@ def harvest_assets(page, output_folder):
                 matrix=fitz.Matrix(2, 2), clip=bbox,
                 colorspace=fitz.csRGB, alpha=True
             )
-            fname = os.path.join(harvested_folder, f"logo_{raster_count:02d}.png")
+            fname = os.path.join(harvested_folder, f"graphic_{raster_count:02d}.png")
             pix.save(fname)
         else:
             # Extract raw bytes from xref — lossless, original resolution
             try:
                 raw   = doc.extract_image(xref)
                 ext   = raw.get("ext", "png")
-                fname = os.path.join(harvested_folder, f"logo_{raster_count:02d}.{ext}")
+                fname = os.path.join(harvested_folder, f"img_{raster_count:02d}.{ext}")
                 with open(fname, "wb") as f:
                     f.write(raw["image"])
             except Exception:
@@ -435,7 +435,7 @@ def harvest_assets(page, output_folder):
                     matrix=fitz.Matrix(2, 2), clip=bbox,
                     colorspace=fitz.csRGB, alpha=False
                 )
-                fname = os.path.join(harvested_folder, f"logo_{raster_count:02d}.png")
+                fname = os.path.join(harvested_folder, f"img_{raster_count:02d}.png")
                 pix.save(fname)
 
         assets.append({"filename": fname, "type": "raster", "bbox": [bbox.x0, bbox.y0, bbox.x1, bbox.y1]})
