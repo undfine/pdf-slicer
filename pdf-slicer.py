@@ -12,7 +12,9 @@ DEFAULT_WIDTH = 1200
 OUTPUT_SUBFOLDER_SUFFIX = "_Assets"
 
 # The number of original PDF points to shave off image edges to avoid borders
-EDGE_INSET = 2.0  
+EDGE_INSET = 2.0
+# Slices shorter than this (PDF points) are merged into their neighbour as a safety net
+MIN_SLICE_HEIGHT = 120
 
 def has_image_to_image_continuity_at_y(img_boxes, y, page_width, y_tolerance=6.0, min_width_ratio=0.6, min_overlap_ratio=0.5):
     """
@@ -88,6 +90,30 @@ def get_abbreviated_prefix(filepath):
     base_name = os.path.splitext(os.path.basename(filepath))[0]
     parts = re.split(r'[\s-]', base_name)
     return parts[0] if parts else "Email"
+
+def _slugify(text, max_len=50):
+    """Convert text to a URL-safe slug suitable for filenames."""
+    text = text.strip()
+    text = re.sub(r"[^\w\s-]", "", text)   # remove punctuation except hyphens
+    text = re.sub(r"[\s_]+", "-", text)     # spaces/underscores → hyphens
+    text = re.sub(r"-{2,}", "-", text)       # collapse consecutive hyphens
+    text = text.lower()[:max_len].rstrip("-")
+    return text or "untitled"
+
+def _svg_to_png(svg_path, scale=2):
+    """Render an SVG file to a transparent PNG at the given scale factor."""
+    with open(svg_path, "rb") as f:
+        svg_bytes = f.read()
+    try:
+        doc      = fitz.open(stream=svg_bytes, filetype="svg")
+        pix      = doc[0].get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=True)
+        png_path = os.path.splitext(svg_path)[0] + ".png"
+        pix.save(png_path)
+        doc.close()
+        return png_path
+    except Exception as e:
+        print(f"  [Harvest] Warning: SVG\u2192PNG failed for {os.path.basename(svg_path)}: {e}")
+        return None
 
 def get_slice_info(page, clip):
     """
@@ -464,6 +490,7 @@ def harvest_assets(page, output_folder):
         fname = os.path.join(harvested_folder, f"button_{button_count:02d}.svg")
         with open(fname, "w", encoding="utf-8") as f:
             f.write(_button_to_svg(btn, page))
+        _svg_to_png(fname)
         fr           = btn["full_rect"]
         filled_paths = [d for d in btn["paths"] if d.get("fill") is not None]
         dom_shape    = max(filled_paths, key=lambda d: d["rect"].width * d["rect"].height) if filled_paths else {}
@@ -497,6 +524,7 @@ def harvest_assets(page, output_folder):
         fname = os.path.join(harvested_folder, f"vector_{vector_count:02d}.svg")
         with open(fname, "w", encoding="utf-8") as f:
             f.write(_group_to_svg(group, group_rect))
+        _svg_to_png(fname)
         assets.append({"filename": fname, "type": "vector", "bbox": [group_rect.x0, group_rect.y0, group_rect.x1, group_rect.y1]})
         print(
             f"  [Harvest] Vector:  {os.path.basename(fname)}  "
@@ -786,11 +814,14 @@ def generate_manifest(pdf_path, page, slices, harvested_assets, output_folder, t
             max(l["bbox"][3] for l in g) + padding,
         )
         # alpha=False renders the actual section background; the PNG is never transparent
-        pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), clip=clip, colorspace=fitz.csRGB, alpha=False)
-        h_fname = os.path.join(harvested_folder, f"headline_{headline_count:02d}.png")
-        pix.save(h_fname)
+        pix        = page.get_pixmap(matrix=fitz.Matrix(2, 2), clip=clip, colorspace=fitz.csRGB, alpha=False)
         ref        = g[0]
         group_text = " ".join(l["text"].strip() for l in g)
+        slug       = _slugify(group_text)
+        h_fname    = os.path.join(harvested_folder, f"headline-{slug}.png")
+        if os.path.exists(h_fname):
+            h_fname = os.path.join(harvested_folder, f"headline-{slug}-{headline_count:02d}.png")
+        pix.save(h_fname)
         group_bbox = [
             min(l["bbox"][0] for l in g), min(l["bbox"][1] for l in g),
             max(l["bbox"][2] for l in g), max(l["bbox"][3] for l in g),
@@ -889,20 +920,58 @@ def generate_manifest(pdf_path, page, slices, harvested_assets, output_folder, t
     # ---------------------------------------------------------------------- #
     # 7.  Build asset registry and write manifest.json                        #
     # ---------------------------------------------------------------------- #
-    btn_lookup     = {b["filename"]: b for b in enriched_buttons}
+    # btn_lookup is keyed by the ORIGINAL harvest filename so the rename pass
+    # below (which mutates btn["filename"] in place) does not break the lookup.
+    btn_lookup = {b["filename"]: b for b in enriched_buttons}
+
+    # Rename button SVG (and companion PNG) files on disk using their text slug
+    used_btn_slugs = set()
+    for btn in enriched_buttons:
+        if not btn.get("text"):
+            continue
+        old_svg  = os.path.join(harvested_folder, btn["filename"])
+        slug     = _slugify(btn["text"])
+        new_base = f"button-{slug}"
+        if new_base in used_btn_slugs:
+            idx      = sum(1 for s in used_btn_slugs if s == new_base or s.startswith(new_base + "-"))
+            new_base = f"{new_base}-{idx:02d}"
+        used_btn_slugs.add(new_base)
+        new_svg = os.path.join(harvested_folder, f"{new_base}.svg")
+        old_png = os.path.splitext(old_svg)[0] + ".png"
+        new_png = os.path.join(harvested_folder, f"{new_base}.png")
+        try:
+            if os.path.exists(old_svg) and not os.path.exists(new_svg):
+                os.rename(old_svg, new_svg)
+            if os.path.exists(old_png) and not os.path.exists(new_png):
+                os.rename(old_png, new_png)
+            btn["filename"] = f"{new_base}.svg"
+        except OSError:
+            pass
+
     asset_registry = []
     for a in (harvested_assets or []):
         bname = os.path.basename(a["filename"])
         if a["type"] == "button":
-            asset_registry.append(btn_lookup.get(bname, {
+            entry = btn_lookup.get(bname, {
                 "filename": bname, "type": "button", "bbox": a["bbox"],
-            }))
+            })
+            # Add PNG companion (filename may have been updated by the rename above)
+            cur_svg = os.path.join(harvested_folder, entry.get("filename", bname))
+            cur_png = os.path.splitext(cur_svg)[0] + ".png"
+            if os.path.exists(cur_png):
+                entry["png"] = os.path.basename(cur_png)
+            asset_registry.append(entry)
         else:
-            asset_registry.append({
+            entry = {
                 "filename": bname,
                 "type":     a["type"],
                 "bbox":     [round(v, 2) for v in a["bbox"]],
-            })
+            }
+            if a["type"] == "vector":
+                cur_png = os.path.join(harvested_folder, os.path.splitext(bname)[0] + ".png")
+                if os.path.exists(cur_png):
+                    entry["png"] = os.path.basename(cur_png)
+            asset_registry.append(entry)
     asset_registry.extend(headline_assets)
 
     manifest = {
@@ -1005,14 +1074,21 @@ def run_slicer(pdf_path, target_width):
             if elem.y0 < img_box.y0 - 5 and elem.y1 > img_box.y1 + 5:
                 suppress_y.add(round(img_box.y1))
 
-    # ALL IMAGES: Suppress drawings fully contained inside (decorative overlays)
+    # ALL IMAGES: Suppress drawings fully contained inside (decorative overlays).
+    # Also suppress a drawing's y0 when it starts inside an image but extends below —
+    # this prevents false cuts when a section background begins within a photo.
     for img_box in img_boxes:
         for elem in section_drawings:
             if elem.y0 > img_box.y0 + 5 and elem.y1 < img_box.y1 - 5:
                 suppress_y.add(round(elem.y0))
                 suppress_y.add(round(elem.y1))
+            elif elem.y0 > img_box.y0 + 5 and elem.y0 < img_box.y1 - 5:
+                # Drawing starts inside image but extends below — suppress its top edge
+                suppress_y.add(round(elem.y0))
 
-    # Merge only truly intersecting images (both vertical AND horizontal overlap)
+    # Intersecting images: suppress the START of the lower image when it begins inside
+    # the upper image's bounding box — the correct cut is at the upper image's y1, not
+    # at the lower image's y0 (which is inside the upper image's content area).
     for i, img1 in enumerate(img_boxes):
         for j, img2 in enumerate(img_boxes):
             if i >= j:
@@ -1020,14 +1096,14 @@ def run_slicer(pdf_path, target_width):
             # Check both vertical and horizontal intersection
             v_overlap = img1.y0 < img2.y1 - 5 and img2.y0 < img1.y1 - 5
             h_overlap = img1.x0 < img2.x1 - 5 and img2.x0 < img1.x1 - 5
-            
-            # Only merge if they truly intersect in both dimensions
+
             if v_overlap and h_overlap:
-                # Suppress the boundary between intersecting images
-                if img1.y1 < img2.y1:
-                    suppress_y.add(round(img1.y1))
-                else:
-                    suppress_y.add(round(img2.y1))
+                # Identify upper (lower y0) and lower image
+                upper, lower = (img1, img2) if img1.y0 <= img2.y0 else (img2, img1)
+                # Suppress the lower image's start when it begins inside the upper —
+                # the upper image's y1 is the true section boundary.
+                if lower.y0 > upper.y0 + 5 and lower.y0 < upper.y1 - 5:
+                    suppress_y.add(round(lower.y0))
 
     # 3. REFINE THE CUTS - wide image boundaries are primary section delimiters
     # Build sets for quick lookup
@@ -1049,6 +1125,10 @@ def run_slicer(pdf_path, target_width):
             if p in suppress_y:
                 continue
 
+            # Skip cuts at image-to-image seams (hero composites / abutting photos)
+            if has_image_to_image_continuity_at_y(img_boxes, p, width):
+                continue
+
             # Prioritize cuts based on type
             is_wide_img_boundary = p in wide_img_y_set
             is_narrow_img_boundary = (p in img_y_set) and (p not in wide_img_y_set)
@@ -1066,6 +1146,24 @@ def run_slicer(pdf_path, target_width):
                 final_cuts.append(p)
 
     if final_cuts[-1] < height: final_cuts.append(height)
+
+    # Safety net: merge any slice shorter than MIN_SLICE_HEIGHT into its larger neighbour
+    changed = True
+    while changed:
+        changed = False
+        for lo in range(len(final_cuts) - 1):
+            hi = lo + 1
+            if final_cuts[hi] - final_cuts[lo] < MIN_SLICE_HEIGHT:
+                prev_h = (final_cuts[lo] - final_cuts[lo - 1]) if lo > 0 else 0
+                next_h = (final_cuts[hi + 1] - final_cuts[hi]) if hi + 1 < len(final_cuts) else 0
+                if lo > 0:
+                    final_cuts.pop(lo)   # absorb thin slice into preceding slice
+                elif hi + 1 < len(final_cuts):
+                    final_cuts.pop(hi)   # absorb into following slice (only for first slice)
+                else:
+                    final_cuts.pop(lo)   # edge case fallback
+                changed = True
+                break
 
     # 4. RENDER SLICES
     for i in range(len(final_cuts) - 1):
@@ -1119,6 +1217,12 @@ def run_slicer(pdf_path, target_width):
         print(f" - Saved {os.path.basename(filename)} (Width: {pix.width}px)")
 
     generate_manifest(abs_pdf_path, page, slices_data, harvested_assets, output_folder, target_width)
+
+    # Full-page JPG preview — same directory and base name as the source PDF
+    preview_path = os.path.splitext(abs_pdf_path)[0] + ".jpg"
+    full_pix = page.get_pixmap(matrix=matrix, colorspace=fitz.csRGB, alpha=False)
+    full_pix.save(preview_path, "jpg", jpg_quality=95)
+    print(f" - Saved full-page preview: {os.path.basename(preview_path)} ({full_pix.width}×{full_pix.height}px)")
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
