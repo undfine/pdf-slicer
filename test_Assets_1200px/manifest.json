@@ -2,7 +2,7 @@
   "meta": {
     "source": "test.pdf",
     "target_width": 1200,
-    "generated_at": "2026-05-03T14:42:52Z"
+    "generated_at": "2026-05-18T12:00:14Z"
   },
   "slices": [
     {
@@ -10,118 +10,19 @@
       "y0": 0,
       "y1": 906,
       "top_layer_kind": "drawing",
-      "text_lines": [
+      "alt_text": "PRACTICALLYPERFECT INEVERYWAY. IT’S SORT OF OUR M I S SI ON STAT EMEN T. You’re trying to pick the perfect club community. Let us help narrow your search. WindRiver in the rolling hills of eastern Tennessee is, dare we say, perfect. This is more than a club, it’s a lifestyle, inherently active, surrounded by miles of adventure from the trails to the courts to the course to Tellico Lake. DISCOVER PERFECT",
+      "paragraphs": [
         {
-          "text": "PRACTICALLYPERFECT INEVERYWAY.",
-          "font": "FieldGothic-No.43MedCond",
-          "size": 20.6,
-          "color": "#5f5740",
-          "bbox": [
-            148.91,
-            603.4,
-            501.14,
-            624.32
-          ],
-          "letter_spacing": 0.143
-        },
-        {
-          "text": "IT’S SORT OF OUR",
-          "font": "NimbusSanExt-Bol",
-          "size": 23.69,
-          "color": "#5f5740",
-          "bbox": [
-            176.41,
-            634.1,
-            480.7,
-            663.9
-          ],
-          "letter_spacing": 0.15
-        },
-        {
-          "text": "M I S SI ON STAT EMEN T.",
-          "font": "NimbusSanExt-Bol",
-          "size": 23.69,
-          "color": "#5f5740",
-          "bbox": [
-            147.82,
-            664.1,
-            502.18,
-            693.9
-          ],
-          "letter_spacing": 0.15
-        },
-        {
-          "text": "You’re trying to pick the perfect club community. Let us help",
-          "font": "DMSans18pt-Regular",
-          "size": 16.0,
-          "color": "#58595b",
-          "bbox": [
-            93.23,
-            708.23,
-            558.49,
-            727.86
-          ]
-        },
-        {
-          "text": "narrow your search. WindRiver in the rolling hills of eastern",
-          "font": "DMSans18pt-Regular",
-          "size": 16.0,
-          "color": "#58595b",
-          "bbox": [
-            101.52,
-            730.23,
-            550.2,
-            749.86
-          ]
-        },
-        {
-          "text": "Tennessee is, dare we say, perfect. This is more than a club, it’s a",
-          "font": "DMSans18pt-Regular",
-          "size": 16.0,
-          "color": "#58595b",
-          "bbox": [
-            78.16,
-            752.23,
-            573.55,
-            771.86
-          ]
-        },
-        {
-          "text": "lifestyle, inherently active, surrounded by miles of adventure from",
+          "text": "You’re trying to pick the perfect club community. Let us help narrow your search. WindRiver in the rolling hills of eastern Tennessee is, dare we say, perfect. This is more than a club, it’s a lifestyle, inherently active, surrounded by miles of adventure from the trails to the courts to the course to Tellico Lake.",
           "font": "DMSans18pt-Regular",
           "size": 16.0,
           "color": "#58595b",
           "bbox": [
             73.95,
-            774.23,
+            708.23,
             577.79,
-            793.86
-          ]
-        },
-        {
-          "text": "the trails to the courts to the course to Tellico Lake.",
-          "font": "DMSans18pt-Regular",
-          "size": 16.0,
-          "color": "#58595b",
-          "bbox": [
-            126.9,
-            796.23,
-            524.82,
             815.86
           ]
-        },
-        {
-          "text": "DISCOVER PERFECT",
-          "font": "NimbusSanExt-Bol",
-          "size": 11.41,
-          "color": "#f2f0ec",
-          "bbox": [
-            252.04,
-            849.62,
-            401.45,
-            863.97
-          ],
-          "letter_spacing": 0.1
         }
       ]
     },
@@ -130,14 +31,16 @@
       "y0": 906,
       "y1": 1074,
       "top_layer_kind": "image",
-      "text_lines": []
+      "alt_text": null,
+      "paragraphs": []
     },
     {
       "filename": "test_slice_03.jpg",
       "y0": 1074,
       "y1": 1580,
       "top_layer_kind": "drawing",
-      "text_lines": [
+      "alt_text": "IT’S ALL RIGHT HERE. Eighteen perfectly manicured holes of our championship golf course, a 216-slip marina, sports courts, spa, and a new clubhouse, and you’ll want to make this wonderland perfectly yours. Manicured and private, with an enthusiastic membership and featuring exceptional residences — maybe perfection at last.",
+      "paragraphs": [
         {
           "text": "IT’S ALL RIGHT HERE.",
           "font": "NimbusSanExt-Bol",
@@ -148,66 +51,17 @@
             1159.12,
             499.74,
             1188.92
-          ],
-          "letter_spacing": 0.15
-        },
-        {
-          "text": "Eighteen perfectly manicured holes of our championship golf",
-          "font": "DMSans18pt-Regular",
-          "size": 16.0,
-          "color": "#ffffff",
-          "bbox": [
-            90.45,
-            1208.99,
-            563.81,
-            1228.63
           ]
         },
         {
-          "text": "course, a 216-slip marina, sports courts, spa, and a new clubhouse,",
-          "font": "DMSans18pt-Regular",
-          "size": 16.0,
-          "color": "#ffffff",
-          "bbox": [
-            68.88,
-            1230.99,
-            585.38,
-            1250.63
-          ]
-        },
-        {
-          "text": "and you’ll want to make this wonderland perfectly yours. Manicured",
+          "text": "Eighteen perfectly manicured holes of our championship golf course, a 216-slip marina, sports courts, spa, and a new clubhouse, and you’ll want to make this wonderland perfectly yours. Manicured and private, with an enthusiastic membership and featuring exceptional residences — maybe perfection at last.",
           "font": "DMSans18pt-Regular",
           "size": 16.0,
           "color": "#ffffff",
           "bbox": [
             66.0,
-            1252.99,
+            1208.99,
             588.26,
-            1272.63
-          ]
-        },
-        {
-          "text": "and private, with an enthusiastic membership and featuring",
-          "font": "DMSans18pt-Regular",
-          "size": 16.0,
-          "color": "#ffffff",
-          "bbox": [
-            96.47,
-            1274.99,
-            557.78,
-            1294.63
-          ]
-        },
-        {
-          "text": "exceptional residences — maybe perfection at last.",
-          "font": "DMSans18pt-Regular",
-          "size": 16.0,
-          "color": "#ffffff",
-          "bbox": [
-            128.43,
-            1296.99,
-            521.58,
             1316.63
           ]
         }
@@ -218,84 +72,24 @@
       "y0": 1580,
       "y1": 1680,
       "top_layer_kind": "image",
-      "text_lines": []
+      "alt_text": null,
+      "paragraphs": []
     },
     {
       "filename": "test_slice_05.png",
       "y0": 1680,
       "y1": 2246,
       "top_layer_kind": "image",
-      "text_lines": [
+      "alt_text": "S EE I NG IS BELI EVI NG. JOINUS FOR A DISCOVERY TOUR. The only way to take in all that is WindRiver is to visit. Our Discovery Tour includes dinner, accommodations at our cozy Lakeside Inn or a nearby hotel, VIP access to community amenities, and a round for two on our spectacular golf course. Let’s plan your stay! LEARN MORE",
+      "paragraphs": [
         {
-          "text": "S EE I NG IS BELI EVI NG.",
-          "font": "FieldGothic-No.43MedCond",
-          "size": 20.6,
-          "color": "#f2f0ec",
-          "bbox": [
-            223.83,
-            1723.65,
-            426.16,
-            1744.58
-          ],
-          "letter_spacing": 0.15
-        },
-        {
-          "text": "JOINUS FOR A DISCOVERY TOUR.",
-          "font": "FieldGothic-No.43MedCond",
-          "size": 26.99,
-          "color": "#f9f8f6",
-          "bbox": [
-            122.78,
-            1753.95,
-            543.45,
-            1781.37
-          ],
-          "letter_spacing": 0.143
-        },
-        {
-          "text": "The only way to take in all that is WindRiver is to visit.",
-          "font": "DMSans18pt-Regular",
-          "size": 16.0,
-          "color": "#eae2da",
-          "bbox": [
-            115.67,
-            2038.41,
-            530.21,
-            2058.04
-          ]
-        },
-        {
-          "text": "Our Discovery Tour includes dinner, accommodations at our",
-          "font": "DMSans18pt-Regular",
-          "size": 16.0,
-          "color": "#eae2da",
-          "bbox": [
-            90.4,
-            2060.41,
-            555.48,
-            2080.04
-          ]
-        },
-        {
-          "text": "cozy Lakeside Inn or a nearby hotel, VIP access to community",
-          "font": "DMSans18pt-Regular",
-          "size": 16.0,
-          "color": "#eae2da",
-          "bbox": [
-            83.87,
-            2082.41,
-            562.01,
-            2102.04
-          ]
-        },
-        {
-          "text": "amenities, and a round for two on our spectacular golf course.",
+          "text": "The only way to take in all that is WindRiver is to visit. Our Discovery Tour includes dinner, accommodations at our cozy Lakeside Inn or a nearby hotel, VIP access to community amenities, and a round for two on our spectacular golf course.",
           "font": "DMSans18pt-Regular",
           "size": 16.0,
           "color": "#eae2da",
           "bbox": [
             82.41,
-            2104.41,
+            2038.41,
             563.47,
             2124.04
           ]
@@ -311,19 +105,6 @@
             396.99,
             2146.04
           ]
-        },
-        {
-          "text": "LEARN MORE",
-          "font": "NimbusSanExt-Bol",
-          "size": 11.41,
-          "color": "#846349",
-          "bbox": [
-            276.24,
-            2178.93,
-            373.76,
-            2193.29
-          ],
-          "letter_spacing": 0.1
         }
       ]
     },
@@ -332,20 +113,8 @@
       "y0": 2246,
       "y1": 3017,
       "top_layer_kind": "drawing",
-      "text_lines": [
-        {
-          "text": "BU I LT TO PERFECTION",
-          "font": "FieldGothic-No.43MedCond",
-          "size": 26.66,
-          "color": "#846349",
-          "bbox": [
-            195.88,
-            2308.42,
-            454.14,
-            2335.51
-          ],
-          "letter_spacing": 0.15
-        },
+      "alt_text": "BU I LT TO PERFECTION 1 7 0 1 2  L I G H T H O U S E  P O I N T E  D R I V E Perfectly sited along scenic Tellico Lake’s main channel, this home offers sweeping water views and superior craftsmanship throughout. Soaring ceilings, exposed beams, and a rustic stone fireplace create a warm, inviting atmosphere in the living room — ideal for relaxing or entertaining. The gourmet kitchen features sleek glass appliances and expansive custom cabinetry. Includes a safe room, whimsical custom-built bunk room (sleeps six), game room, kitchenette, and bar. STEP INSIDE",
+      "paragraphs": [
         {
           "text": "1 7 0 1 2  L I G H T H O U S E  P O I N T E  D R I V E",
           "font": "FieldGothic-No.43MedCond",
@@ -359,125 +128,16 @@
           ]
         },
         {
-          "text": "Perfectly sited along scenic Tellico Lake’s main channel,",
-          "font": "DMSans18pt-Regular",
-          "size": 15.0,
-          "color": "#58595b",
-          "bbox": [
-            125.34,
-            2712.86,
-            528.65,
-            2731.26
-          ]
-        },
-        {
-          "text": "this home offers sweeping water views and superior",
-          "font": "DMSans18pt-Regular",
-          "size": 15.0,
-          "color": "#58595b",
-          "bbox": [
-            137.9,
-            2733.86,
-            516.09,
-            2752.26
-          ]
-        },
-        {
-          "text": "craftsmanship throughout. Soaring ceilings, exposed",
-          "font": "DMSans18pt-Regular",
-          "size": 15.0,
-          "color": "#58595b",
-          "bbox": [
-            136.43,
-            2754.86,
-            517.56,
-            2773.26
-          ]
-        },
-        {
-          "text": "beams, and a rustic stone fireplace create a warm, inviting",
-          "font": "DMSans18pt-Regular",
-          "size": 15.0,
-          "color": "#58595b",
-          "bbox": [
-            115.69,
-            2775.86,
-            538.3,
-            2794.26
-          ]
-        },
-        {
-          "text": "atmosphere in the living room — ideal for relaxing or",
-          "font": "DMSans18pt-Regular",
-          "size": 15.0,
-          "color": "#58595b",
-          "bbox": [
-            137.42,
-            2796.86,
-            516.58,
-            2815.26
-          ]
-        },
-        {
-          "text": "entertaining. The gourmet kitchen features sleek glass",
-          "font": "DMSans18pt-Regular",
-          "size": 15.0,
-          "color": "#58595b",
-          "bbox": [
-            130.62,
-            2817.86,
-            523.37,
-            2836.26
-          ]
-        },
-        {
-          "text": "appliances and expansive custom cabinetry. Includes a safe",
+          "text": "Perfectly sited along scenic Tellico Lake’s main channel, this home offers sweeping water views and superior craftsmanship throughout. Soaring ceilings, exposed beams, and a rustic stone fireplace create a warm, inviting atmosphere in the living room — ideal for relaxing or entertaining. The gourmet kitchen features sleek glass appliances and expansive custom cabinetry. Includes a safe room, whimsical custom-built bunk room (sleeps six), game room, kitchenette, and bar.",
           "font": "DMSans18pt-Regular",
           "size": 15.0,
           "color": "#58595b",
           "bbox": [
             109.57,
-            2838.86,
+            2712.86,
             544.39,
-            2857.26
-          ]
-        },
-        {
-          "text": "room, whimsical custom-built bunk room (sleeps six), game",
-          "font": "DMSans18pt-Regular",
-          "size": 15.0,
-          "color": "#58595b",
-          "bbox": [
-            110.47,
-            2859.86,
-            543.52,
-            2878.26
-          ]
-        },
-        {
-          "text": "room, kitchenette, and bar.",
-          "font": "DMSans18pt-Regular",
-          "size": 15.0,
-          "color": "#58595b",
-          "bbox": [
-            228.73,
-            2880.86,
-            421.27,
             2899.26
           ]
-        },
-        {
-          "text": "STEP INSIDE",
-          "font": "NimbusSanExt-Bol",
-          "size": 11.41,
-          "color": "#e5dbd1",
-          "bbox": [
-            278.38,
-            2948.57,
-            371.62,
-            2962.93
-          ],
-          "letter_spacing": 0.1
         }
       ]
     },
@@ -486,7 +146,8 @@
       "y0": 3017,
       "y1": 3362.0,
       "top_layer_kind": "drawing",
-      "text_lines": [
+      "alt_text": "NEW RELEASE – GOLF COTTAGES FROM $1.15M • LAKEFRONT ESTATES FROM $2.1M • HOMESITES FROM $225K 865-988-1864 | windriverliving.com THIS IS NOT INTENDED TO BE AN OFFER TO SELL OR SOLICITATION OF OFFERS TO BUY REAL ESTATE IN WINDRIVER TO RESIDENTS OF ANY STATE OR JURISDICTION WHERE PRIOR REGISTRATION IS REQUIRED OR WHERE PROHIBITED BY LAW, UNLESS REGISTERED OR EXEMPT FROM REGISTRATION. FOR CORRECT REPRESENTATIONS MAKE REFERENCE TO TENNESSEE STATUTES, TO BE FURNISHED BY THE DEVELOPER TO A BUYER. ©2026 WINDRIVER PROPERTIES, LLC.",
+      "paragraphs": [
         {
           "text": "NEW RELEASE – GOLF COTTAGES FROM $1.15M • LAKEFRONT ESTATES FROM $2.1M • HOMESITES FROM $225K",
           "font": "NimbusSanExt-Reg",
@@ -512,7 +173,7 @@
           ]
         },
         {
-          "text": "THIS IS NOT INTENDED TO BE AN OFFER TO SELL OR SOLICITATION OF OFFERS TO BUY REAL ESTATE IN WINDRIVER TO RESIDENTS OF ANY STATE OR",
+          "text": "THIS IS NOT INTENDED TO BE AN OFFER TO SELL OR SOLICITATION OF OFFERS TO BUY REAL ESTATE IN WINDRIVER TO RESIDENTS OF ANY STATE OR JURISDICTION WHERE PRIOR REGISTRATION IS REQUIRED OR WHERE PROHIBITED BY LAW, UNLESS REGISTERED OR EXEMPT FROM REGISTRATION. FOR",
           "font": "NimbusSanConL-Reg",
           "size": 7.0,
           "color": "#b1b3b6",
@@ -520,18 +181,6 @@
             99.34,
             3281.29,
             569.85,
-            3290.82
-          ]
-        },
-        {
-          "text": "JURISDICTION WHERE PRIOR REGISTRATION IS REQUIRED OR WHERE PROHIBITED BY LAW, UNLESS REGISTERED OR EXEMPT FROM REGISTRATION. FOR",
-          "font": "NimbusSanConL-Reg",
-          "size": 7.0,
-          "color": "#b1b3b6",
-          "bbox": [
-            99.34,
-            3289.54,
-            569.84,
             3299.06
           ]
         },
@@ -626,31 +275,61 @@
     {
       "filename": "button_01.svg",
       "type": "button",
+      "text": "LEARN MORE",
+      "font": "NimbusSanExt-Bol",
+      "size": 11.41,
+      "text_color": "#846349",
+      "letter_spacing": 0.1,
+      "background": "#f1efeb",
+      "border": {
+        "color": null,
+        "width": 0
+      },
       "bbox": [
-        237.32,
-        2170.62,
-        412.68,
-        2202.22
+        237.31500244140625,
+        2170.619140625,
+        412.68499755859375,
+        2202.218994140625
       ]
     },
     {
       "filename": "button_02.svg",
       "type": "button",
+      "text": "DISCOVER PERFECT",
+      "font": "NimbusSanExt-Bol",
+      "size": 11.41,
+      "text_color": "#f2f0ec",
+      "letter_spacing": 0.1,
+      "background": "#5f5640",
+      "border": {
+        "color": null,
+        "width": 0
+      },
       "bbox": [
-        225.33,
-        841.04,
-        428.16,
-        872.64
+        225.33200073242188,
+        841.04296875,
+        428.1610107421875,
+        872.64306640625
       ]
     },
     {
       "filename": "button_03.svg",
       "type": "button",
+      "text": "STEP INSIDE",
+      "font": "NimbusSanExt-Bol",
+      "size": 11.41,
+      "text_color": "#e5dbd1",
+      "letter_spacing": 0.1,
+      "background": "#846248",
+      "border": {
+        "color": null,
+        "width": 0
+      },
       "bbox": [
-        223.59,
-        2940.25,
-        426.41,
-        2971.85
+        223.58599853515625,
+        2940.25390625,
+        426.41497802734375,
+        2971.85400390625
       ]
     },
     {
@@ -681,6 +360,81 @@
         3283.77,
         97.34,
         3294.02
+      ]
+    },
+    {
+      "filename": "headline_01.png",
+      "type": "headline",
+      "text": "PRACTICALLYPERFECT INEVERYWAY.",
+      "font": "FieldGothic-No.43MedCond",
+      "size": 20.6,
+      "color": "#5f5740",
+      "letter_spacing": 0.143,
+      "bbox": [
+        148.91,
+        603.4,
+        501.14,
+        624.32
+      ]
+    },
+    {
+      "filename": "headline_02.png",
+      "type": "headline",
+      "text": "IT’S SORT OF OUR M I S SI ON STAT EMEN T.",
+      "font": "NimbusSanExt-Bol",
+      "size": 23.69,
+      "color": "#5f5740",
+      "letter_spacing": 0.15,
+      "bbox": [
+        147.82,
+        634.1,
+        502.18,
+        693.9
+      ]
+    },
+    {
+      "filename": "headline_03.png",
+      "type": "headline",
+      "text": "S EE I NG IS BELI EVI NG.",
+      "font": "FieldGothic-No.43MedCond",
+      "size": 20.6,
+      "color": "#f2f0ec",
+      "letter_spacing": 0.15,
+      "bbox": [
+        223.83,
+        1723.65,
+        426.16,
+        1744.58
+      ]
+    },
+    {
+      "filename": "headline_04.png",
+      "type": "headline",
+      "text": "JOINUS FOR A DISCOVERY TOUR.",
+      "font": "FieldGothic-No.43MedCond",
+      "size": 26.99,
+      "color": "#f9f8f6",
+      "letter_spacing": 0.143,
+      "bbox": [
+        122.78,
+        1753.95,
+        543.45,
+        1781.37
+      ]
+    },
+    {
+      "filename": "headline_05.png",
+      "type": "headline",
+      "text": "BU I LT TO PERFECTION",
+      "font": "FieldGothic-No.43MedCond",
+      "size": 26.66,
+      "color": "#846349",
+      "letter_spacing": 0.15,
+      "bbox": [
+        195.88,
+        2308.42,
+        454.14,
+        2335.51
       ]
     }
   ]
