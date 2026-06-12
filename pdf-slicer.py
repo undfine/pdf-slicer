@@ -25,18 +25,28 @@ MIN_SLICE_HEIGHT = 120
 
 def has_image_to_image_continuity_at_y(img_boxes, y, page_width, y_tolerance=6.0, min_width_ratio=0.6, min_overlap_ratio=0.5):
     """
-    True when y looks like an internal seam between two wide images that visually
-    continue into each other (typical of hero composites / overlays).
+    True when y is an internal seam inside a composite: one wide image ends near y
+    while a second wide image genuinely SPANS across y (started before y, extends
+    past y).  This suppresses spurious cuts inside multi-layer hero composites but
+    does NOT suppress cuts between merely adjacent images (e.g. a hero photo that
+    abuts a coloured section implemented as a JPEG background).
     """
     min_img_width = page_width * min_width_ratio
     min_x_overlap = page_width * min_overlap_ratio
 
-    ending = [b for b in img_boxes if abs(b.y1 - y) <= y_tolerance and b.width >= min_img_width]
-    starting = [b for b in img_boxes if abs(b.y0 - y) <= y_tolerance and b.width >= min_img_width]
+    ending  = [b for b in img_boxes if abs(b.y1 - y) <= y_tolerance and b.width >= min_img_width]
+    # Require the companion image to span ACROSS y — it must have started well
+    # before y and continue well past it.  Merely starting at y (adjacent tile)
+    # is not sufficient; that would incorrectly suppress section boundaries.
+    spanning = [
+        b for b in img_boxes
+        if b.y0 < y - y_tolerance and b.y1 > y + y_tolerance
+        and b.width >= min_img_width
+    ]
 
-    for upper in ending:
-        for lower in starting:
-            overlap = min(upper.x1, lower.x1) - max(upper.x0, lower.x0)
+    for end_img in ending:
+        for span_img in spanning:
+            overlap = min(end_img.x1, span_img.x1) - max(end_img.x0, span_img.x0)
             if overlap >= min_x_overlap:
                 return True
 
@@ -455,10 +465,11 @@ def harvest_assets(page, output_folder):
         bbox       = fitz.Rect(img["bbox"])
         area_ratio = (bbox.width * bbox.height) / page_area
         has_alpha  = smask > 0
-
-        # Harvest only: transparent images OR small images (logo / icon sized)
-        if not (has_alpha or area_ratio < 0.15):
-            continue
+        # Large opaque images (≥15% of page) are content photos; extract them as
+        # "photo_NN" files so they are individually accessible in Harvested/.
+        # Small images (icons/logos) and transparent images also continue to be
+        # harvested as before.
+        is_large   = not has_alpha and area_ratio >= 0.15
 
         raster_count += 1
         tag = "alpha" if has_alpha else f"{area_ratio:.0%} of page"
@@ -472,11 +483,13 @@ def harvest_assets(page, output_folder):
             fname = os.path.join(harvested_folder, f"graphic_{raster_count:02d}.png")
             pix.save(fname)
         else:
-            # Extract raw bytes from xref — lossless, original resolution
+            # Extract raw bytes from xref — original resolution.
+            # Large photos use the "photo_" prefix; icons/logos use "img_".
+            file_prefix = "photo" if is_large else "img"
             try:
                 raw   = doc.extract_image(xref)
                 ext   = raw.get("ext", "png")
-                fname = os.path.join(harvested_folder, f"img_{raster_count:02d}.{ext}")
+                fname = os.path.join(harvested_folder, f"{file_prefix}_{raster_count:02d}.{ext}")
                 with open(fname, "wb") as f:
                     f.write(raw["image"])
             except Exception:
@@ -484,11 +497,13 @@ def harvest_assets(page, output_folder):
                     matrix=fitz.Matrix(2, 2), clip=bbox,
                     colorspace=fitz.csRGB, alpha=False
                 )
-                fname = os.path.join(harvested_folder, f"img_{raster_count:02d}.png")
+                fname = os.path.join(harvested_folder, f"{file_prefix}_{raster_count:02d}.png")
                 pix.save(fname)
 
-        assets.append({"filename": fname, "type": "raster", "bbox": [bbox.x0, bbox.y0, bbox.x1, bbox.y1]})
-        print(f"  [Harvest] Raster:  {os.path.basename(fname)}  [{tag}]")
+        asset_type = "photo" if is_large else "raster"
+        assets.append({"filename": fname, "type": asset_type, "bbox": [bbox.x0, bbox.y0, bbox.x1, bbox.y1]})
+        label = "Photo" if is_large else "Raster"
+        print(f"  [Harvest] {label}:  {os.path.basename(fname)}  [{tag}]")
 
     # ----------------------------------------------------------------------- #
     # PHASE B: Vector elements — buttons first, then logos / icons            #
@@ -1133,9 +1148,14 @@ def run_slicer(pdf_path, target_width):
             if elem.y0 < img_box.y0 - 5 and elem.y1 > img_box.y0 + 5 and near_section_top:
                 suppress_y.add(round(img_box.y0))
 
-            # Suppress bottom only when drawing fully contains the image vertically
-            # (the image is a decorative background element, not a standalone photo)
-            if elem.y0 < img_box.y0 - 5 and elem.y1 > img_box.y1 + 5:
+            # Suppress the image's bottom edge only when the section drawing also
+            # ends close by — i.e. the image fills (or nearly fills) the section and
+            # is a decorative background, not a standalone hero photo.  When the
+            # drawing extends well past the image's bottom (more than MIN_SLICE_HEIGHT
+            # below it), the image is a content photo that deserves its own slice
+            # boundary; keep the cut at img_box.y1.
+            near_section_bottom = (elem.y1 - img_box.y1) < MIN_SLICE_HEIGHT
+            if elem.y0 < img_box.y0 - 5 and elem.y1 > img_box.y1 + 5 and near_section_bottom:
                 suppress_y.add(round(img_box.y1))
 
     # NARROW IMAGES: suppress only when near the top of the section drawing
