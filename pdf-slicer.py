@@ -2,10 +2,17 @@ import base64
 from datetime import datetime
 import fitz  # PyMuPDF
 import hashlib
+import io
 import json
 import os
 import re
 import sys
+
+try:
+    from PIL import Image as _PILImage
+    _HAS_PIL = True
+except ImportError:
+    _HAS_PIL = False
 
 # --- CONFIGURATION ---
 DEFAULT_WIDTH = 1200  
@@ -318,27 +325,43 @@ def _button_to_svg(button, page, padding=4.0):
     ])
 
 
-def _cluster_drawings(drawings, proximity=15.0):
-    """Group path drawings into spatial clusters via a single-pass sweep."""
+def _cluster_drawings(drawings, proximity=20.0):
+    """
+    Group path drawings into spatial clusters using union-find.
+
+    Union-find handles chained proximity correctly: if A is near B and B is near C
+    they all end up in one group even when A and C are far apart — which prevents
+    widely-spaced but related elements (e.g. letter-spaced display type rendered as
+    separate paths) from being emitted as dozens of individual vector assets.
+    """
     if not drawings:
         return []
-    sorted_d = sorted(drawings, key=lambda d: (d["rect"].y0, d["rect"].x0))
-    groups, current = [], [sorted_d[0]]
-    current_union   = fitz.Rect(sorted_d[0]["rect"])
-    for d in sorted_d[1:]:
-        r        = d["rect"]
-        expanded = fitz.Rect(
-            current_union.x0 - proximity, current_union.y0 - proximity,
-            current_union.x1 + proximity, current_union.y1 + proximity,
-        )
-        if not (r & expanded).is_empty:
-            current.append(d)
-            current_union |= r
-        else:
-            groups.append(current)
-            current, current_union = [d], fitz.Rect(r)
-    groups.append(current)
-    return groups
+
+    n       = len(drawings)
+    rects   = [fitz.Rect(d["rect"]) for d in drawings]
+    parent  = list(range(n))
+
+    def _find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]   # path compression
+            x = parent[x]
+        return x
+
+    def _union(a, b):
+        parent[_find(a)] = _find(b)
+
+    for i in range(n):
+        ri = rects[i]
+        exp = fitz.Rect(ri.x0 - proximity, ri.y0 - proximity,
+                        ri.x1 + proximity, ri.y1 + proximity)
+        for j in range(i + 1, n):
+            if not (exp & rects[j]).is_empty:
+                _union(i, j)
+
+    groups_dict: dict = {}
+    for i in range(n):
+        groups_dict.setdefault(_find(i), []).append(drawings[i])
+    return list(groups_dict.values())
 
 
 def _hash_drawing_group(group, group_rect):
@@ -508,12 +531,18 @@ def harvest_assets(page, output_folder):
 
     # B2: LOGOS / ICONS — remaining paths, small enough to be non-structural
     logo_candidates = [d for d in candidates if id(d) not in button_path_ids]
-    for group in _cluster_drawings(logo_candidates, proximity=15.0):
+    for group in _cluster_drawings(logo_candidates):  # proximity=20 default
         group_rect = group[0]["rect"]
         for d in group[1:]:
             group_rect |= d["rect"]
 
+        # Skip clusters that are too large (structural, not icon-sized)
         if (group_rect.width * group_rect.height) / page_area > 0.10:
+            continue
+
+        # Skip trivially tiny clusters — single decorative marks, sub-5pt strokes,
+        # or individual letter-shaped paths that clustering didn't merge in time
+        if group_rect.width < 8 and group_rect.height < 8:
             continue
 
         group_hash = _hash_drawing_group(group, group_rect)
@@ -804,24 +833,64 @@ def generate_manifest(pdf_path, page, slices, harvested_assets, output_folder, t
         if not placed:
             groups.append([ln])
 
+    # Post-merge: if two adjacent groups' render clips would overlap (e.g. large
+    # line-height causes "A WAY OF LIFE" to bleed into "MORE THAN AMENITIES"),
+    # combine them into a single image so neither PNG captures the other.
+    _HEADLINE_PAD = 6.0
+
+    def _group_clip(g):
+        return fitz.Rect(
+            min(l["bbox"][0] for l in g) - _HEADLINE_PAD,
+            min(l["bbox"][1] for l in g) - _HEADLINE_PAD,
+            max(l["bbox"][2] for l in g) + _HEADLINE_PAD,
+            max(l["bbox"][3] for l in g) + _HEADLINE_PAD,
+        )
+
+    clip_changed = True
+    while clip_changed:
+        clip_changed = False
+        for i in range(len(groups) - 1):
+            if not (_group_clip(groups[i]) & _group_clip(groups[i + 1])).is_empty:
+                groups[i] = groups[i] + groups[i + 1]
+                del groups[i + 1]
+                clip_changed = True
+                break
+
     for g in groups:
         headline_count += 1
-        padding = 6.0
-        clip = fitz.Rect(
-            min(l["bbox"][0] for l in g) - padding,
-            min(l["bbox"][1] for l in g) - padding,
-            max(l["bbox"][2] for l in g) + padding,
-            max(l["bbox"][3] for l in g) + padding,
-        )
-        # alpha=False renders the actual section background; the PNG is never transparent
-        pix        = page.get_pixmap(matrix=fitz.Matrix(2, 2), clip=clip, colorspace=fitz.csRGB, alpha=False)
+        padding = _HEADLINE_PAD
+        clip = _group_clip(g)
+        # Render with alpha=True so PyMuPDF includes an alpha channel.
+        # Then remove the section background via PIL colour-keying so the
+        # exported PNG is truly transparent (no baked-in section colour).
+        pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), clip=clip, colorspace=fitz.csRGB, alpha=True)
         ref        = g[0]
         group_text = " ".join(l["text"].strip() for l in g)
         slug       = _slugify(group_text)
         h_fname    = os.path.join(harvested_folder, f"headline-{slug}.png")
         if os.path.exists(h_fname):
             h_fname = os.path.join(harvested_folder, f"headline-{slug}-{headline_count:02d}.png")
-        pix.save(h_fname)
+
+        if _HAS_PIL:
+            # Use PIL to key out the background colour so the headline is transparent
+            img = _PILImage.open(io.BytesIO(pix.tobytes("png"))).convert("RGBA")
+            px  = img.load()
+            pw, ph = img.size
+            # Sample a pixel a few pixels in from the corner to avoid anti-alias edge
+            sx, sy = min(3, pw - 1), min(3, ph - 1)
+            bg = px[sx, sy][:3]
+            tol = 20  # per-channel tolerance
+            for iy in range(ph):
+                for ix in range(pw):
+                    r, g_ch, b, a = px[ix, iy]
+                    if abs(r - bg[0]) + abs(g_ch - bg[1]) + abs(b - bg[2]) <= tol * 3:
+                        px[ix, iy] = (r, g_ch, b, 0)
+            buf = io.BytesIO()
+            img.save(buf, format="PNG")
+            with open(h_fname, "wb") as fp:
+                fp.write(buf.getvalue())
+        else:
+            pix.save(h_fname)
         group_bbox = [
             min(l["bbox"][0] for l in g), min(l["bbox"][1] for l in g),
             max(l["bbox"][2] for l in g), max(l["bbox"][3] for l in g),
@@ -1055,28 +1124,37 @@ def run_slicer(pdf_path, target_width):
     # WIDE IMAGES: Only suppress if drawing starts BEFORE image (structural overlay)
     for img_box in wide_images:
         for elem in section_drawings:
-            # Suppress top if drawing starts before and extends into image (header case)
-            if elem.y0 < img_box.y0 - 5 and elem.y1 > img_box.y0 + 5:
+            # Suppress the image's top edge only when it begins very close to the
+            # section-drawing's own top — i.e. a header/hero image embedded at the
+            # TOP of the band.  An image that starts well into the section (more
+            # than MIN_SLICE_HEIGHT below the drawing's y0) is a standalone photo
+            # that should become its own slice; don't suppress it.
+            near_section_top = (img_box.y0 - elem.y0) < MIN_SLICE_HEIGHT
+            if elem.y0 < img_box.y0 - 5 and elem.y1 > img_box.y0 + 5 and near_section_top:
                 suppress_y.add(round(img_box.y0))
-            
-            # Suppress bottom if drawing starts before and extends past (full background case)
+
+            # Suppress bottom only when drawing fully contains the image vertically
+            # (the image is a decorative background element, not a standalone photo)
             if elem.y0 < img_box.y0 - 5 and elem.y1 > img_box.y1 + 5:
                 suppress_y.add(round(img_box.y1))
 
-    # NARROW IMAGES: Apply all suppression rules (they're content, not section boundaries)
+    # NARROW IMAGES: suppress only when near the top of the section drawing
     for img_box in narrow_images:
         for elem in section_drawings:
-            # Suppress if drawing overlays from above
-            if elem.y0 < img_box.y0 - 5 and elem.y1 > img_box.y0 + 5:
+            near_section_top = (img_box.y0 - elem.y0) < MIN_SLICE_HEIGHT
+            if elem.y0 < img_box.y0 - 5 and elem.y1 > img_box.y0 + 5 and near_section_top:
                 suppress_y.add(round(img_box.y0))
-            
-            # Suppress if drawing extends past bottom
+
+            # Suppress bottom if drawing fully contains image
             if elem.y0 < img_box.y0 - 5 and elem.y1 > img_box.y1 + 5:
                 suppress_y.add(round(img_box.y1))
 
     # ALL IMAGES: Suppress drawings fully contained inside (decorative overlays).
     # Also suppress a drawing's y0 when it starts inside an image but extends below —
     # this prevents false cuts when a section background begins within a photo.
+    # Additionally suppress a drawing's y1 when the drawing ends inside an image's
+    # vertical span — this prevents a thin phantom slice between the drawing edge and
+    # the image's true bottom (e.g. section band ending mid-photo-strip).
     for img_box in img_boxes:
         for elem in section_drawings:
             if elem.y0 > img_box.y0 + 5 and elem.y1 < img_box.y1 - 5:
@@ -1085,6 +1163,10 @@ def run_slicer(pdf_path, target_width):
             elif elem.y0 > img_box.y0 + 5 and elem.y0 < img_box.y1 - 5:
                 # Drawing starts inside image but extends below — suppress its top edge
                 suppress_y.add(round(elem.y0))
+            elif elem.y0 < img_box.y0 - 5 and img_box.y0 + 5 < elem.y1 < img_box.y1 - 5:
+                # Drawing ends inside image's vertical span — suppress drawing's bottom
+                # edge so the photo strip isn't split by the drawing boundary
+                suppress_y.add(round(elem.y1))
 
     # Intersecting images: suppress the START of the lower image when it begins inside
     # the upper image's bounding box — the correct cut is at the upper image's y1, not
@@ -1162,6 +1244,89 @@ def run_slicer(pdf_path, target_width):
                     final_cuts.pop(hi)   # absorb into following slice (only for first slice)
                 else:
                     final_cuts.pop(lo)   # edge case fallback
+                changed = True
+                break
+
+    # Post-process: detect body text that straddles a wide-image top boundary.
+    #
+    # Pattern: a section's last body paragraph slightly overflows onto the top
+    # gradient of the following photo (its bbox starts just above the image y0
+    # but its bulk falls below).  The correct cut is right after that straddling
+    # text, so the photo slice starts cleanly with the photo's own caption/quote.
+    #
+    # Detection: for each cut that matches a wide-image y0, collect all text spans
+    # (size ≥ 10pt) whose top falls within STRADDLE_TOLERANCE pt above the cut and
+    # whose bottom extends at least MIN_SLICE_HEIGHT below it.  Insert a new cut
+    # 8pt after the deepest straddling span.
+    STRADDLE_TOLERANCE = 80   # pt above the cut a straddling paragraph may start
+
+    # Pre-collect text block bboxes, then merge consecutive lines into paragraph
+    # proxies.  PyMuPDF often returns one block per visual line; merging blocks
+    # whose tops are within MAX_LINE_GAP of the previous block's bottom
+    # reconstructs paragraph-level bounding boxes so the straddling check works
+    # correctly even when only the first line starts before the photo boundary.
+    MAX_LINE_GAP = 10.0  # pt — tighter than inter-paragraph spacing (~30–50pt)
+
+    _raw_straddle_blocks = []
+    try:
+        for _blk in page.get_text("dict", flags=0)["blocks"]:
+            if _blk.get("type") != 0:
+                continue
+            bb = _blk.get("bbox")
+            if not bb:
+                continue
+            max_sz = max(
+                (
+                    (sp.get("size", 0) or 0)
+                    for ln in _blk.get("lines", [])
+                    for sp in ln.get("spans", [])
+                    if sp.get("text", "").strip()
+                ),
+                default=0,
+            )
+            if max_sz >= 10:
+                _raw_straddle_blocks.append(bb)
+    except Exception:
+        pass
+
+    # Merge line-level blocks into paragraph proxies
+    _raw_straddle_blocks.sort(key=lambda b: (b[1], b[0]))
+    _straddle_blocks = []
+    for bb in _raw_straddle_blocks:
+        if _straddle_blocks and 0 <= (bb[1] - _straddle_blocks[-1][3]) <= MAX_LINE_GAP:
+            prev = _straddle_blocks[-1]
+            _straddle_blocks[-1] = [
+                min(prev[0], bb[0]), min(prev[1], bb[1]),
+                max(prev[2], bb[2]), max(prev[3], bb[3]),
+            ]
+        else:
+            _straddle_blocks.append(list(bb))
+
+    changed = True
+    while changed:
+        changed = False
+        for i, cut_y in enumerate(final_cuts[1:-1], start=1):
+            # Use proximity match instead of exact set membership — the cut point
+            # may come from a section-drawing boundary that is 1–2pt offset from
+            # the wide-image's own y0 (e.g. section y1=2490 vs photo y0=2491).
+            near_wide_img = any(abs(cut_y - wy) <= 5 for wy in wide_img_y_set)
+            if not near_wide_img:
+                continue
+            next_cut = final_cuts[i + 1]
+            straddlers = [
+                bb for bb in _straddle_blocks
+                if (cut_y - STRADDLE_TOLERANCE) <= bb[1] < (cut_y + 10)
+                and bb[3] > (cut_y + 80)   # must extend meaningfully below the cut
+            ]
+            if not straddlers:
+                continue
+            new_cut = round(max(bb[3] for bb in straddlers) + 8)
+            if cut_y + MIN_SLICE_HEIGHT < new_cut < next_cut - MIN_SLICE_HEIGHT:
+                # Replace the straddling cut rather than adding a new one alongside
+                # it — this keeps the straddling paragraph in the preceding slice
+                # instead of creating a thin orphan slice for just its overflow.
+                final_cuts[final_cuts.index(cut_y)] = new_cut
+                final_cuts.sort()
                 changed = True
                 break
 
