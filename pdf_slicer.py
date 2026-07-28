@@ -1084,33 +1084,18 @@ def generate_manifest(pdf_path, page, slices, harvested_assets, output_folder, t
 # SLICER                                                                        #
 # =========================================================================== #
 
-def run_slicer(pdf_path, target_width):
-    abs_pdf_path = os.path.abspath(pdf_path)
-    parent_dir = os.path.dirname(abs_pdf_path)
-    prefix = get_abbreviated_prefix(abs_pdf_path)
-    
-    # Folder name includes width for clarity
-    output_folder = os.path.join(parent_dir, f"{prefix}{OUTPUT_SUBFOLDER_SUFFIX}_{target_width}px")
-    if not os.path.exists(output_folder):
-        os.makedirs(output_folder)
+def compute_cuts(page, width, height):
+    """
+    Phases 1-3 of the slicer: discover horizontal cut points (in PDF-point
+    space, y from 0 to `height`) from wide section-background rectangles and
+    image bounding boxes, suppress cuts that would split a visual unit, then
+    refine for minimum slice height and straddling paragraphs.
 
-    try:
-        doc = fitz.open(abs_pdf_path)
-    except Exception as e:
-        print(f"Error opening PDF: {e}")
-        sys.exit(1)
-
-    page = doc[0]
-    width, height = page.rect.width, page.rect.height
-    
-    zoom = target_width / width
-    matrix = fitz.Matrix(zoom, zoom)
-
-    # 0. ASSET HARVESTING
-    harvested_assets = harvest_assets(page, output_folder)
-
+    Returns the sorted list of cut y-coordinates (including 0 and `height`).
+    This is the pre-render "detection" step — the review UI edits the bands
+    derived from this list before Phase 4 ever runs.
+    """
     # 1. GATHER ALL POTENTIAL CUT POINTS (Horizontal Y-coordinates)
-    slices_data = []
     drawings = page.get_drawings()
     raw_cuts = [0, height]
     section_drawings = []  # wide filled rects that act as section separators
@@ -1350,17 +1335,102 @@ def run_slicer(pdf_path, target_width):
                 changed = True
                 break
 
-    # 4. RENDER SLICES
-    for i in range(len(final_cuts) - 1):
-        y0, y1 = final_cuts[i], final_cuts[i+1]
-        
+    return final_cuts
+
+
+def classify_band(page, width, y0, y1):
+    """
+    Returns the top_layer_kind ('image', 'drawing', or 'text') for the
+    full-width band [y0, y1), using paint-order z-order data when available
+    and falling back to an image-coverage heuristic otherwise. Shared by the
+    pre-render regions.json writer and the Phase 4 render loop so both agree
+    on the same classification.
+    """
+    mid_y = (y0 + y1) / 2.0
+    coverage, _ = get_combined_image_bounds(page, fitz.Rect(0, y0, width, y1))
+    top_layer_kind = get_top_layer_kind_at_y(page, width, mid_y) or (
+        "image" if coverage > 0.7 else "text"
+    )
+    return top_layer_kind
+
+
+def render_full_page_preview(page, matrix, abs_pdf_path):
+    """Renders the full-page JPG preview used by both the CLI output and the review UI."""
+    preview_path = os.path.splitext(abs_pdf_path)[0] + ".jpg"
+    full_pix = page.get_pixmap(matrix=matrix, colorspace=fitz.csRGB, alpha=False)
+    full_pix.save(preview_path, "jpg", jpg_quality=95)
+    print(f" - Saved full-page preview: {os.path.basename(preview_path)} ({full_pix.width}×{full_pix.height}px)")
+    return preview_path
+
+
+def write_regions_file(output_folder, abs_pdf_path, target_width, width, height, bands, page, preview_path):
+    """
+    Writes regions.json into output_folder: the pre-render cut bands for the
+    review step. Field names (y0, y1, top_layer_kind) match what
+    generate_manifest() already emits per-slice, so the review UI and
+    --from-regions round-trip need no translation layer.
+    """
+    regions = []
+    for i, (y0, y1) in enumerate(bands, start=1):
+        regions.append({
+            "id": i,
+            "y0": y0,
+            "y1": y1,
+            "top_layer_kind": classify_band(page, width, y0, y1),
+        })
+
+    payload = {
+        "meta": {
+            "source": os.path.basename(abs_pdf_path),
+            "pdf_path": abs_pdf_path,
+            "target_width": target_width,
+            "page_width": width,
+            "page_height": height,
+            "scale": target_width / width,
+            "preview_image": preview_path,
+        },
+        "regions": regions,
+    }
+    regions_path = os.path.join(output_folder, "regions.json")
+    with open(regions_path, "w") as f:
+        json.dump(payload, f, indent=2)
+    return regions_path
+
+
+def load_regions_file(path):
+    """
+    Reads a regions file — either the raw regions.json from --detect-only or
+    the reviewed/edited file written by the review server's POST endpoint —
+    and returns a sorted list of (y0, y1) bands ready for Phase 4. Only y0/y1
+    are consumed; extra bookkeeping fields (id, top_layer_kind, ...) are
+    ignored so the review UI is free to carry whatever it needs.
+    """
+    with open(path) as f:
+        payload = json.load(f)
+    regions = payload["regions"] if isinstance(payload, dict) else payload
+    bands = sorted(
+        ((float(r["y0"]), float(r["y1"])) for r in regions),
+        key=lambda b: b[0],
+    )
+    return bands
+
+
+def render_slices(page, matrix, width, bands, output_folder, prefix):
+    """
+    Phase 4: crops + renders each (y0, y1) band to its own file (JPG or PNG,
+    chosen by image-coverage ratio, with JPG shrink-wrap/inset). Returns the
+    slices_data list generate_manifest() expects.
+    """
+    slices_data = []
+    for i, (y0, y1) in enumerate(bands):
+
         # Start with full width
         full_width_clip = fitz.Rect(0, y0, width, y1)
         coverage, combined_rect = get_combined_image_bounds(page, full_width_clip)
-        
+
         # Determine format first
         ext = ".jpg" if coverage > 0.7 else ".png"
-        
+
         # INITIALIZE RENDERING CLIP
         render_clip = full_width_clip
 
@@ -1370,9 +1440,9 @@ def run_slicer(pdf_path, target_width):
         if ext == ".jpg" and combined_rect and combined_rect.width > (width * 0.5):
             # Apply Inset to the combined box of all images in this row
             render_clip = fitz.Rect(
-                combined_rect.x0 + EDGE_INSET, 
-                y0 + EDGE_INSET, 
-                combined_rect.x1 - EDGE_INSET, 
+                combined_rect.x0 + EDGE_INSET,
+                y0 + EDGE_INSET,
+                combined_rect.x1 - EDGE_INSET,
                 y1 - EDGE_INSET
             )
 
@@ -1380,9 +1450,9 @@ def run_slicer(pdf_path, target_width):
         # Use alpha=False only for JPGs to keep borders clean
         # Keep alpha=True for PNGs to preserve text/logo transparency
         use_alpha = True if ext == ".png" else False
-        
+
         pix = page.get_pixmap(matrix=matrix, clip=render_clip, colorspace=fitz.csRGB, alpha=use_alpha)
-        
+
         filename = os.path.join(output_folder, f"{prefix}_slice_{i+1:02d}{ext}")
         if ext == ".jpg":
             pix.save(filename, "jpg", jpg_quality=95)
@@ -1401,28 +1471,130 @@ def run_slicer(pdf_path, target_width):
         })
         print(f" - Saved {os.path.basename(filename)} (Width: {pix.width}px)")
 
-    generate_manifest(abs_pdf_path, page, slices_data, harvested_assets, output_folder, target_width)
+    return slices_data
 
-    # Full-page JPG preview — same directory and base name as the source PDF
-    preview_path = os.path.splitext(abs_pdf_path)[0] + ".jpg"
-    full_pix = page.get_pixmap(matrix=matrix, colorspace=fitz.csRGB, alpha=False)
-    full_pix.save(preview_path, "jpg", jpg_quality=95)
-    print(f" - Saved full-page preview: {os.path.basename(preview_path)} ({full_pix.width}×{full_pix.height}px)")
+
+def open_pdf_page(abs_pdf_path, target_width):
+    """
+    Shared setup used by every entry point (CLI render, --review): opens the
+    PDF, computes page dimensions/zoom matrix, and derives the output folder
+    path (next to the source PDF, matching the Shortcut-driven workflow).
+    Returns (doc, page, width, height, matrix, output_folder, prefix).
+    """
+    parent_dir = os.path.dirname(abs_pdf_path)
+    prefix = get_abbreviated_prefix(abs_pdf_path)
+    output_folder = os.path.join(parent_dir, f"{prefix}{OUTPUT_SUBFOLDER_SUFFIX}_{target_width}px")
+
+    try:
+        doc = fitz.open(abs_pdf_path)
+    except Exception as e:
+        print(f"Error opening PDF: {e}")
+        sys.exit(1)
+
+    page = doc[0]
+    width, height = page.rect.width, page.rect.height
+    zoom = target_width / width
+    matrix = fitz.Matrix(zoom, zoom)
+    return doc, page, width, height, matrix, output_folder, prefix
+
+
+def export_bands(page, matrix, width, bands, output_folder, prefix, abs_pdf_path, target_width):
+    """
+    Runs harvest + Phase 4 render + manifest + preview for a finalized set of
+    bands — the actual work done once regions are confirmed, whether that
+    confirmation came from --from-regions or the interactive --review server.
+    Returns the slices_data list.
+    """
+    if not os.path.exists(output_folder):
+        os.makedirs(output_folder)
+    harvested_assets = harvest_assets(page, output_folder)
+    slices_data = render_slices(page, matrix, width, bands, output_folder, prefix)
+    generate_manifest(abs_pdf_path, page, slices_data, harvested_assets, output_folder, target_width)
+    render_full_page_preview(page, matrix, abs_pdf_path)
+    return slices_data
+
+
+def run_slicer(pdf_path, target_width, detect_only=False, from_regions_path=None, review=False):
+    abs_pdf_path = os.path.abspath(pdf_path)
+    doc, page, width, height, matrix, output_folder, prefix = open_pdf_page(abs_pdf_path, target_width)
+
+    if review:
+        import review_server
+        final_cuts = compute_cuts(page, width, height)
+        bands = list(zip(final_cuts, final_cuts[1:]))
+        summary = review_server.run_review_session(
+            page, matrix, width, height, target_width, output_folder, prefix, abs_pdf_path, bands,
+            classify_band, export_bands,
+        )
+        print(f" - Exported {summary['slice_count']} slice(s) -> {summary['output_folder']}")
+        return
+
+    if from_regions_path:
+        bands = load_regions_file(from_regions_path)
+        print(f" - Loaded {len(bands)} reviewed region(s) from {os.path.basename(from_regions_path)}")
+    else:
+        final_cuts = compute_cuts(page, width, height)
+        bands = list(zip(final_cuts, final_cuts[1:]))
+
+    if detect_only:
+        if not os.path.exists(output_folder):
+            os.makedirs(output_folder)
+        preview_path = render_full_page_preview(page, matrix, abs_pdf_path)
+        regions_path = write_regions_file(
+            output_folder, abs_pdf_path, target_width, width, height, bands, page, preview_path
+        )
+        print(f" - Detected {len(bands)} region(s) -> {os.path.basename(regions_path)}")
+        print(f" - Review with: python3 review_server.py \"{output_folder}\"")
+        return
+
+    export_bands(page, matrix, width, bands, output_folder, prefix, abs_pdf_path, target_width)
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         sys.exit(1)
-        
-    path = sys.argv[1]
-    
+
+    argv = sys.argv[1:]
+
+    # --detect-only: stop after Phase 3, write regions.json + preview for review
+    detect_only = "--detect-only" in argv
+    if detect_only:
+        argv.remove("--detect-only")
+
+    # --review: detect + serve + auto-open browser + block until Export, then
+    # render immediately — the one-command flow for Shortcut-driven use.
+    review = "--review" in argv
+    if review:
+        argv.remove("--review")
+
+    # --from-regions PATH: skip detection, render from a (reviewed) regions file
+    from_regions_path = None
+    if "--from-regions" in argv:
+        idx = argv.index("--from-regions")
+        if idx + 1 >= len(argv):
+            print("Error: --from-regions requires a path argument")
+            sys.exit(1)
+        from_regions_path = argv[idx + 1]
+        del argv[idx:idx + 2]
+
+    if not argv:
+        sys.exit(1)
+
+    path = argv[0]
+
     # Check for second argument (width) from Shortcut
     # Shortcut passes $1 (path) and $2 (width)
     active_width = DEFAULT_WIDTH
-    if len(sys.argv) > 2:
+    if len(argv) > 1:
         try:
-            active_width = int(sys.argv[2])
+            active_width = int(argv[1])
         except ValueError:
             pass
 
     if os.path.exists(path):
-        run_slicer(path, active_width)
+        run_slicer(
+            path, active_width,
+            detect_only=detect_only, from_regions_path=from_regions_path, review=review,
+        )
+    else:
+        print(f"Error: file not found: {path}")
+        sys.exit(1)

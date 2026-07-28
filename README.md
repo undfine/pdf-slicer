@@ -29,13 +29,13 @@ pip install PyMuPDF Pillow
 ## Usage
 
 ```bash
-python3 pdf-slicer.py path/to/your/file.pdf
+python3 pdf_slicer.py path/to/your/file.pdf
 ```
 
 ### Example
 
 ```bash
-python3 pdf-slicer.py "Marketing-Email-2024.pdf"
+python3 pdf_slicer.py "Marketing-Email-2024.pdf"
 ```
 
 This will create a folder called `Marketing_Assets` in the same directory as the PDF, containing numbered slices:
@@ -43,6 +43,29 @@ This will create a folder called `Marketing_Assets` in the same directory as the
 - `Marketing-slice_02.jpg`
 - `Marketing-slice_03.png`
 - etc.
+
+### Reviewing slice boundaries before export
+
+By default the detected cut points are exported immediately. To review and adjust them first, use `--review`:
+
+```bash
+python3 pdf_slicer.py path/to/your/file.pdf --review
+```
+
+This opens a browser tab with the detected regions overlaid on the rendered page. Drag boundaries, split/merge/add/delete regions, then click **Export** — the real harvest/crop/manifest pipeline runs immediately and slices are written next to the source PDF, same as a normal run. Nothing touches disk until Export is clicked; in-progress edits persist to the browser's `localStorage` (keyed by PDF path) so a reload won't lose them. This is the recommended entry point for a Shortcut/CLI invocation, since it's a single blocking command.
+
+Two lower-level flags support reviewing detection output from a separate session:
+
+```bash
+python3 pdf_slicer.py path/to/your/file.pdf --detect-only   # write regions.json + preview, no slices
+python3 review_server.py path/to/your/file_Assets_1200px     # open a browser to edit that regions.json
+```
+
+```bash
+python3 pdf_slicer.py path/to/your/file.pdf --from-regions path/to/your/file_Assets_1200px/regions.json
+```
+
+`--from-regions` exports using a previously reviewed regions file instead of re-running detection. `review_server.py` requires no extra dependencies (Python stdlib only, no Flask/FastAPI).
 
 ## How It Works
 
@@ -109,6 +132,11 @@ Each slice is rendered at the target width. Format is chosen by image coverage r
 - Designed primarily for email newsletters and marketing materials with distinct visual sections
 
 ## Changelog
+
+### v8.2
+- **Interactive region review**: New `--review` flag opens a browser-based editor (`region-editor-prototype.html`, served by the new `review_server.py`) showing detected slice boundaries over the rendered page. Boundaries can be dragged, split, merged, added, or deleted before export. Regions and the preview image are served straight from memory — nothing is written to disk until **Export** is clicked, which runs the real harvest/crop/manifest pipeline in-process and writes slices next to the source PDF, matching the existing Shortcut-based workflow.
+- Added `--detect-only` (writes `regions.json` + a full-page preview without exporting) and `--from-regions <path>` (exports from a previously saved/reviewed regions file) for reviewing detection output outside the single blocking `--review` command.
+- **Renamed** `pdf-slicer.py` → `pdf_slicer.py` so it can be `import`-ed directly as a normal Python module (hyphenated filenames aren't valid module names).
 
 ### v8.1
 - **Full-photo harvesting**: Removed the `area_ratio < 0.15` gate from Phase A raster harvesting. All embedded images are now extracted to `Harvested/` regardless of size. Large photos (≥15% page area) are saved as `photo_NN.{ext}` at native resolution; small logos/icons continue as `img_NN.{ext}`; transparent images as `graphic_NN.png`.

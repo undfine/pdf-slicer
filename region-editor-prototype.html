@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Region editor prototype</title>
+<style>
+  :root{
+    --bg:#f5f4f1; --panel:#ffffff; --border:#ddd9d0; --border-strong:#b8b2a5;
+    --ink:#2b2924; --muted:#8a8578; --accent:#c7511f; --accent-soft:#f3ddd0;
+    --img-fill:#dce7f2; --img-stroke:#4472a8;
+    --text-fill:#e8f0e0; --text-stroke:#5b8a3a;
+    --drawing-fill:#f6e3d3; --drawing-stroke:#c7511f;
+    --sel:#1f6feb;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;background:var(--bg);color:var(--ink);}
+  .app{display:flex;height:100vh;}
+  .canvas-wrap{flex:1;overflow:auto;padding:32px;display:flex;justify-content:center;align-items:flex-start;}
+  .stage{position:relative;background:#fff;border:1px solid var(--border-strong);box-shadow:0 2px 12px rgba(0,0,0,0.06);user-select:none;}
+  .stage img{position:absolute;top:0;left:0;width:100%;height:100%;display:block;pointer-events:none;}
+
+  .region{position:absolute;left:0;border:2px solid var(--img-stroke);background:rgba(68,114,168,0.08);cursor:move;}
+  .region.type-text{border-color:var(--text-stroke);background:rgba(91,138,58,0.08);}
+  .region.type-drawing{border-color:var(--drawing-stroke);background:rgba(199,81,31,0.10);}
+  .region.selected{outline:2px solid var(--sel);outline-offset:2px;z-index:5;}
+  .region .tag{position:absolute;top:-20px;left:-2px;background:var(--ink);color:#fff;font-size:10px;padding:2px 6px;border-radius:3px;white-space:nowrap;pointer-events:none;}
+  .handle{position:absolute;left:0;right:0;height:10px;cursor:ns-resize;}
+  .handle::after{content:'';position:absolute;left:50%;top:50%;width:32px;height:4px;margin:-2px 0 0 -16px;background:#fff;border:1.5px solid var(--sel);border-radius:2px;}
+  .h-top{top:-5px;} .h-bottom{bottom:-5px;}
+
+  .sidebar{width:300px;background:var(--panel);border-left:1px solid var(--border);display:flex;flex-direction:column;}
+  .sidebar h1{font-size:14px;margin:0;padding:16px;border-bottom:1px solid var(--border);}
+  .sidebar h1 span{display:block;font-size:11px;color:var(--muted);font-weight:400;margin-top:2px;}
+  .list{flex:1;overflow:auto;padding:8px;}
+  .item{border:1px solid var(--border);border-radius:6px;padding:8px 10px;margin-bottom:6px;cursor:pointer;font-size:12px;}
+  .item.active{border-color:var(--sel);background:#eef4ff;}
+  .item .row{display:flex;justify-content:space-between;align-items:center;}
+  .item .name{font-weight:600;}
+  .swatch{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:6px;}
+  .sw-image{background:var(--img-stroke);} .sw-text{background:var(--text-stroke);} .sw-drawing{background:var(--drawing-stroke);}
+  .item select{font-size:11px;margin-top:6px;width:100%;padding:3px;border:1px solid var(--border);border-radius:4px;}
+  .actions{padding:10px 16px;border-top:1px solid var(--border);display:flex;gap:8px;flex-wrap:wrap;}
+  button{font-size:12px;padding:7px 10px;border-radius:6px;border:1px solid var(--border-strong);background:#fff;cursor:pointer;color:var(--ink);}
+  button:hover{background:#f2f0ea;}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#fff;}
+  button.primary:hover{background:#a8440f;}
+  button:disabled{opacity:0.4;cursor:not-allowed;}
+  .hint{padding:10px 16px;font-size:11px;color:var(--muted);border-top:1px solid var(--border);line-height:1.5;}
+  .status{margin:8px 16px 16px;font-size:11px;line-height:1.5;padding:8px;border-radius:6px;background:#f2f0ea;color:var(--muted);white-space:pre-wrap;word-break:break-word;}
+  .status.error{background:#fbe4dd;color:#8a3216;}
+  .status.ok{background:#e6f3e0;color:#2f5a1c;}
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="canvas-wrap">
+    <div class="stage" id="stage"></div>
+  </div>
+
+  <div class="sidebar">
+    <h1>Regions <span id="count">0 detected</span></h1>
+    <div class="list" id="list"></div>
+    <div class="actions">
+      <button id="btnMerge">Merge selected</button>
+      <button id="btnSplit">Split in half</button>
+      <button id="btnDelete">Delete</button>
+      <button id="btnAdd">Draw new band</button>
+    </div>
+    <div class="actions">
+      <button class="primary" id="btnExport">Export</button>
+    </div>
+    <div class="hint">Drag a band to move it, drag the top/bottom edge to resize. Shift-click two bands then Merge to combine a mistakenly-split section. Select a band and Split to break it into two stacked bands. Bands always span the full page width — this mirrors the horizontal cuts pdf_slicer.py actually renders. Export runs the real harvest + crop + manifest step immediately — there's no separate render command to run afterward.</div>
+    <div class="status" id="status">Loading regions from server…</div>
+  </div>
+</div>
+
+<script>
+const stage = document.getElementById('stage');
+const list = document.getElementById('list');
+const countEl = document.getElementById('count');
+const statusEl = document.getElementById('status');
+
+let meta = null;       // {source, target_width, page_width, page_height, scale, preview_image}
+let regions = [];      // [{id, y0, y1, top_layer_kind}] — y0/y1 in PDF points, matches pdf_slicer.py exactly
+let nextId = 1;
+let selected = new Set();
+let dragState = null;
+
+const KINDS = ['image', 'drawing', 'text'];
+const MIN_HEIGHT_PT = 10;
+
+function setStatus(text, kind){
+  statusEl.textContent = text;
+  statusEl.className = 'status' + (kind ? ' ' + kind : '');
+}
+
+// Edits are cached in localStorage, keyed by the PDF's own path, so a reload
+// mid-review resumes your in-progress boundaries instead of the pristine
+// server detection. Cleared once Export succeeds.
+function localKey(){ return 'pdfSlicerReview:' + meta.pdf_path; }
+
+function saveLocal(){
+  if(!meta) return;
+  localStorage.setItem(localKey(), JSON.stringify({meta, regions}));
+}
+
+function clearLocal(){
+  if(meta) localStorage.removeItem(localKey());
+}
+
+async function loadData(){
+  try{
+    const res = await fetch('/api/regions');
+    if(!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    meta = data.meta;
+
+    let resumed = false;
+    const cached = localStorage.getItem(localKey());
+    if(cached){
+      try{
+        const parsed = JSON.parse(cached);
+        regions = parsed.regions.map(r => ({id: r.id, y0: r.y0, y1: r.y1, top_layer_kind: r.top_layer_kind}));
+        resumed = true;
+      }catch(e){ /* corrupt cache entry — fall through to server data */ }
+    }
+    if(!resumed){
+      regions = data.regions.map(r => ({id: r.id, y0: r.y0, y1: r.y1, top_layer_kind: r.top_layer_kind}));
+    }
+    nextId = regions.reduce((m, r) => Math.max(m, r.id), 0) + 1;
+
+    stage.style.width = meta.target_width + 'px';
+    stage.style.height = Math.round(meta.page_height * meta.scale) + 'px';
+
+    const img = document.createElement('img');
+    img.src = '/api/page';
+    img.alt = meta.source;
+    stage.appendChild(img);
+
+    setStatus(resumed
+      ? `Resumed ${regions.length} in-progress region(s) for ${meta.source}.`
+      : `Loaded ${regions.length} region(s) from ${meta.source}.`, 'ok');
+    render();
+  }catch(e){
+    setStatus('Could not load regions from the review server: ' + e.message +
+      '\n\nRun: python3 pdf_slicer.py <file>.pdf --review\nor: python3 pdf_slicer.py <file>.pdf --detect-only && python3 review_server.py <file>_Assets_<width>px', 'error');
+  }
+}
+
+function ptToPx(pt){ return pt * meta.scale; }
+function pxToPt(px){ return px / meta.scale; }
+
+function render(){
+  saveLocal();
+  stage.querySelectorAll('.region').forEach(el=>el.remove());
+  regions.slice().sort((a,b)=>a.y0-b.y0).forEach(r=>{
+    const el = document.createElement('div');
+    el.className = 'region type-'+r.top_layer_kind + (selected.has(r.id)?' selected':'');
+    el.style.top = ptToPx(r.y0)+'px';
+    el.style.height = ptToPx(r.y1 - r.y0)+'px';
+    el.style.width = '100%';
+    el.dataset.id = r.id;
+    el.innerHTML = '<div class="tag">'+Math.round(r.y0)+'–'+Math.round(r.y1)+'pt · '+r.top_layer_kind+'</div>'+
+      '<div class="handle h-top"></div><div class="handle h-bottom"></div>';
+    el.addEventListener('pointerdown', e=>onRegionDown(e, r));
+    el.querySelector('.h-top').addEventListener('pointerdown', e=>{e.stopPropagation(); onHandleDown(e, r, 'top');});
+    el.querySelector('.h-bottom').addEventListener('pointerdown', e=>{e.stopPropagation(); onHandleDown(e, r, 'bottom');});
+    stage.appendChild(el);
+  });
+  renderList();
+}
+
+function renderList(){
+  countEl.textContent = regions.length + ' detected';
+  list.innerHTML = '';
+  regions.slice().sort((a,b)=>a.y0-b.y0).forEach(r=>{
+    const item = document.createElement('div');
+    item.className = 'item' + (selected.has(r.id)?' active':'');
+    item.innerHTML = '<div class="row"><span class="name"><span class="swatch sw-'+r.top_layer_kind+'"></span>'+
+      Math.round(r.y0)+'–'+Math.round(r.y1)+'pt</span></div>'+
+      '<select data-id="'+r.id+'">'+
+      KINDS.map(t=>'<option value="'+t+'"'+(t===r.top_layer_kind?' selected':'')+'>'+t+'</option>').join('')+
+      '</select>';
+    item.addEventListener('click', e=>{
+      if(e.target.tagName==='SELECT') return;
+      if(!e.shiftKey) selected.clear();
+      selected.has(r.id) ? selected.delete(r.id) : selected.add(r.id);
+      render();
+    });
+    item.querySelector('select').addEventListener('change', e=>{
+      r.top_layer_kind = e.target.value; render();
+    });
+    list.appendChild(item);
+  });
+}
+
+function onRegionDown(e, r){
+  e.stopPropagation();
+  if(!e.shiftKey){ selected.clear(); selected.add(r.id); } else { selected.add(r.id); }
+  render();
+  dragState = {mode:'move', id:r.id, startY:e.clientY, orig:{...r}};
+  window.addEventListener('pointermove', onMove);
+  window.addEventListener('pointerup', onUp);
+}
+
+function onHandleDown(e, r, edge){
+  selected.clear(); selected.add(r.id); render();
+  dragState = {mode:'resize', edge, id:r.id, startY:e.clientY, orig:{...r}};
+  window.addEventListener('pointermove', onMove);
+  window.addEventListener('pointerup', onUp);
+}
+
+function onMove(e){
+  if(!dragState) return;
+  const r = regions.find(x=>x.id===dragState.id);
+  const dyPt = pxToPt(e.clientY - dragState.startY);
+  const o = dragState.orig;
+  const pageHeight = meta.page_height;
+
+  if(dragState.mode==='move'){
+    const h = o.y1 - o.y0;
+    let y0 = o.y0 + dyPt;
+    y0 = Math.max(0, Math.min(pageHeight - h, y0));
+    r.y0 = y0; r.y1 = y0 + h;
+  } else if(dragState.edge==='top'){
+    r.y0 = Math.max(0, Math.min(o.y1 - MIN_HEIGHT_PT, o.y0 + dyPt));
+  } else {
+    r.y1 = Math.min(pageHeight, Math.max(o.y0 + MIN_HEIGHT_PT, o.y1 + dyPt));
+  }
+  render();
+}
+
+function onUp(){
+  dragState = null;
+  window.removeEventListener('pointermove', onMove);
+  window.removeEventListener('pointerup', onUp);
+}
+
+document.getElementById('btnMerge').addEventListener('click', ()=>{
+  if(selected.size < 2) return;
+  const sel = regions.filter(r=>selected.has(r.id));
+  const y0 = Math.min(...sel.map(r=>r.y0));
+  const y1 = Math.max(...sel.map(r=>r.y1));
+  const merged = {id:nextId++, y0, y1, top_layer_kind: sel[0].top_layer_kind};
+  regions = regions.filter(r=>!selected.has(r.id));
+  regions.push(merged);
+  selected = new Set([merged.id]);
+  render();
+});
+
+document.getElementById('btnSplit').addEventListener('click', ()=>{
+  if(selected.size !== 1) return;
+  const r = regions.find(x=>selected.has(x.id));
+  const mid = (r.y0 + r.y1) / 2;
+  const a = {id:nextId++, y0:r.y0, y1:mid, top_layer_kind:r.top_layer_kind};
+  const b = {id:nextId++, y0:mid, y1:r.y1, top_layer_kind:r.top_layer_kind};
+  regions = regions.filter(x=>x.id!==r.id);
+  regions.push(a,b);
+  selected = new Set([a.id,b.id]);
+  render();
+});
+
+document.getElementById('btnDelete').addEventListener('click', ()=>{
+  regions = regions.filter(r=>!selected.has(r.id));
+  selected.clear();
+  render();
+});
+
+document.getElementById('btnAdd').addEventListener('click', ()=>{
+  const height = Math.min(200, meta.page_height);
+  const r = {id:nextId++, y0:0, y1:height, top_layer_kind:'text'};
+  regions.push(r);
+  selected = new Set([r.id]);
+  render();
+});
+
+document.getElementById('btnExport').addEventListener('click', async ()=>{
+  const btn = document.getElementById('btnExport');
+  const payload = {
+    regions: regions.slice().sort((a,b)=>a.y0-b.y0)
+      .map(({id,y0,y1,top_layer_kind})=>({id, y0, y1, top_layer_kind}))
+  };
+  setStatus('Exporting — running harvest, crop and manifest generation…');
+  btn.disabled = true;
+  try{
+    const res = await fetch('/api/export', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload)
+    });
+    const data = await res.json();
+    if(!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
+    clearLocal();
+    setStatus(`Done — exported ${data.slice_count} slice(s) to:\n${data.output_folder}\n\nYou can close this tab.`, 'ok');
+  }catch(e){
+    setStatus('Export failed: ' + e.message, 'error');
+    btn.disabled = false;
+  }
+});
+
+loadData();
+</script>
+</body>
+</html>
